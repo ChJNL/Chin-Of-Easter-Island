@@ -187,8 +187,8 @@ function layout() {
   const ry = hadWorld ? player.y / canvas.height : 0;
 
   // 캔버스를 창 크기에 맞춰 꽉 채움 (회색 여백 없음)
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
+  canvas.width = window.visualViewport?.width || window.innerWidth;
+  canvas.height = window.visualViewport?.height || window.innerHeight;
 
   const W = canvas.width;
   const H = canvas.height;
@@ -397,6 +397,29 @@ window.addEventListener("keyup", (e) => {
   keys[e.code] = false;
 });
 
+// 터치 방향 패드는 기존 키보드 이동 상태를 그대로 사용
+document.querySelectorAll(".touch-pad [data-key]").forEach((button) => {
+  const key = button.dataset.key;
+
+  button.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    button.setPointerCapture(e.pointerId);
+    keys[key] = true;
+    button.classList.add("is-pressed");
+  });
+
+  const release = () => {
+    keys[key] = false;
+    button.classList.remove("is-pressed");
+  };
+
+  button.addEventListener("pointerup", release);
+  button.addEventListener("pointercancel", release);
+  button.addEventListener("lostpointercapture", release);
+});
+
+document.querySelector(".touch-interact").addEventListener("click", interact);
+
 // 창 포커스를 잃으면 눌린 키 상태 초기화 (캐릭터가 계속 걷는 현상 방지)
 window.addEventListener("blur", () => {
   for (const k in keys) keys[k] = false;
@@ -480,6 +503,7 @@ function startDialogue(script, onEnd) {
   dialogueScript = script;
   dialogueOnEnd = onEnd || null;
   dialogueActive = true;
+  document.body.classList.add("dialogue-open");
   dialogueIndex = 0;
   dialogueEl.classList.remove("hidden");
   showLine();
@@ -530,6 +554,7 @@ function advanceDialogue() {
 
 function endDialogue() {
   dialogueActive = false;
+  document.body.classList.remove("dialogue-open");
   dialogueEl.classList.add("hidden");
 
   const callback = dialogueOnEnd;
@@ -569,6 +594,7 @@ let carveProgress = 0;       // V라인 완성도 (0~100)
 
 function openCarve() {
   carveActive = true;
+  document.body.classList.add("carve-open");
   carveFinishing = false;
   carveDoneEl.classList.add("hidden");
   carveModal.classList.remove("hidden");
@@ -579,6 +605,7 @@ function openCarve() {
 
 function closeCarve() {
   carveActive = false;
+  document.body.classList.remove("carve-open");
   carveModal.classList.add("hidden");
 }
 
@@ -1248,6 +1275,8 @@ document.addEventListener("visibilitychange", () => {
 
 // ===== 17. 시작 =====
 window.addEventListener("resize", layout);
+window.addEventListener("orientationchange", layout);
+window.visualViewport?.addEventListener("resize", layout);
 layout();
 updateGoldUI();
 

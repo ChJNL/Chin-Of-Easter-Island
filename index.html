@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>이스터 섬의 턱</title>
   <!-- 한글 도트(픽셀) 폰트: 불러오지 못하면 style.css의 대체 폰트가 사용됩니다 -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/galmuri@latest/dist/galmuri.css">
@@ -17,6 +17,19 @@
     <div>이동: 방향키 / WASD &nbsp;|&nbsp; 상호작용: E</div>
     <div class="area">위치: <span id="areaText">오두막 마당</span></div>
     <div class="gold">보유 골드: <span id="goldText">0</span> G</div>
+  </div>
+
+  <!-- 터치 화면용 이동 및 상호작용 컨트롤 -->
+  <div class="touch-controls" aria-label="터치 조작">
+    <div class="touch-pad" aria-label="이동">
+      <button type="button" data-key="ArrowUp" aria-label="위로 이동">▲</button>
+      <button type="button" data-key="ArrowLeft" aria-label="왼쪽으로 이동">◀</button>
+      <span aria-hidden="true"></span>
+      <button type="button" data-key="ArrowRight" aria-label="오른쪽으로 이동">▶</button>
+      <span aria-hidden="true"></span>
+      <button type="button" data-key="ArrowDown" aria-label="아래로 이동">▼</button>
+    </div>
+    <button class="touch-interact" type="button" aria-label="상호작용">E</button>
   </div>
 
   <!-- 상단 우측: 리셋 버튼 -->

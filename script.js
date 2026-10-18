@@ -5,7 +5,7 @@
 // ===== 0. HTML 요소 확인 =====
 // index.html이 이 script.js와 짝이 맞지 않으면(예전 버전 등) 원인을 화면에 알려줌
 const REQUIRED_IDS = [
-  "gameCanvas", "message", "goldText", "resetBtn",
+  "gameCanvas", "message", "goldText", "areaText", "resetBtn",
   "dialogue", "dlgName", "dlgText", "dlgNext",
   "carveModal", "carvePanel", "carveStage", "chinShape",
   "gaugeFill", "gaugeText", "carveDone", "carveBtn", "carveClose",
@@ -31,6 +31,7 @@ const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 const messageEl = document.getElementById("message");
 const goldTextEl = document.getElementById("goldText");
+const areaTextEl = document.getElementById("areaText");
 const resetBtn = document.getElementById("resetBtn");
 
 // 대화창 요소
@@ -51,12 +52,12 @@ const carveBtn = document.getElementById("carveBtn");
 const carveClose = document.getElementById("carveClose");
 
 // ===== 2. 저장 데이터 (LocalStorage) =====
-// 저장 구조: { gold, isSharp, tutorialDone, rewardDone, playerPos:{x,y} }
-//  - isSharp      : 석상이 V라인으로 깎였는지
-//  - rewardDone   : 관광객 보상(+100G)을 이미 받았는지 (새로고침 시 중복 지급 방지)
-//  - playerPos    : 화면 크기에 대한 비율(0~1)이라 창 크기가 달라져도 안전함
+// 저장 구조:
+//  gold, isSharp(석상 V라인 여부), tutorialDone, rewardDone(관광객 보상 수령),
+//  villageVisited(마을 방문 여부), villageIntroDone(원주민 마을 소개 대화 완료),
+//  playerPos(맵 전체 기준 비율 0~1)
 const SAVE_KEY = "easterChinSave";
-const DEFAULT_PLAYER_POS = { x: 0.3, y: 0.75 };
+const DEFAULT_PLAYER_POS = { x: 0.15, y: 0.75 }; // 오두막 앞 (맵 전체 가로의 15%)
 
 function defaultSave() {
   return {
@@ -64,6 +65,8 @@ function defaultSave() {
     isSharp: false,
     tutorialDone: false,
     rewardDone: false,
+    villageVisited: false,
+    villageIntroDone: false,
     playerPos: { ...DEFAULT_PLAYER_POS },
   };
 }
@@ -72,7 +75,7 @@ function clamp01(n) {
   return Math.max(0, Math.min(1, n));
 }
 
-// 불러온 값이 이상해도(손상/수동 편집 등) 안전한 값만 남김
+// 불러온 값이 이상해도(손상/수동 편집/이전 버전 저장 등) 안전한 값만 남김
 function sanitizeSave(raw) {
   const data = defaultSave();
   if (!raw || typeof raw !== "object") return data;
@@ -81,6 +84,8 @@ function sanitizeSave(raw) {
   data.isSharp = raw.isSharp === true;
   data.tutorialDone = raw.tutorialDone === true;
   data.rewardDone = raw.rewardDone === true;
+  data.villageVisited = raw.villageVisited === true;
+  data.villageIntroDone = raw.villageIntroDone === true;
 
   const p = raw.playerPos;
   if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
@@ -108,14 +113,14 @@ function loadSave() {
 
 const save = loadSave();
 
-let ready = false;      // 초기화가 끝나기 전에는 저장하지 않음 (플레이어 위치가 아직 없으므로)
+let ready = false;      // 초기화가 끝나기 전에는 저장하지 않음
 let resetting = false;  // 리셋 중에는 저장하지 않음 (새로고침 직전 자동 저장으로 되살아나는 것 방지)
 
 function saveGame() {
   if (!ready || resetting) return;
   try {
     save.playerPos = {
-      x: clamp01(player.x / canvas.width),
+      x: clamp01(player.x / worldW),
       y: clamp01(player.y / canvas.height),
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(save));
@@ -135,16 +140,52 @@ const hut = { x: 0, y: 0, w: 150, h: 110 };
 const moai = { x: 0, y: 0, w: 56, h: 110, interactRange: 90 };
 
 // 관광객 NPC
-// mode: null(대기) | "arriving"(석상 앞으로 걸어오는 중) | "leaving"(바다 쪽으로 돌아가는 중)
+// mode: null(대기) | "arriving"(석상 앞으로 걸어오는 중) | "leaving"(마을 쪽으로 돌아가는 중)
 const tourist = { x: 0, y: 0, rx: 12, ry: 16, speed: 110, visible: false, mode: null };
 
-let seaStart = 0;     // 바다 시작 x좌표 (화면 오른쪽 약 20%)
+// 원주민 NPC (마을 중앙)
+const villager = { x: 0, y: 0, rx: 12, ry: 16 };
+
+// 마을 건물들 (위치/크기는 layout()에서 계산)
+const buildings = [
+  {
+    id: "shop", name: "도구 상점", w: 150, h: 110, x: 0, y: 0,
+    prompt: "[E] 도구 상점 (다음 단계에서 오픈)",
+    closedMsg: "도구 상점은 다음 단계에서 오픈됩니다!",
+  },
+  {
+    id: "board", name: "홍보판", w: 110, h: 90, x: 0, y: 0,
+    prompt: "[E] 홍보물 붙이기 (다음 단계에서 오픈)",
+    closedMsg: "홍보판은 다음 단계에서 오픈됩니다!",
+  },
+  {
+    id: "estate", name: "이스터 부동산", w: 170, h: 120, x: 0, y: 0,
+    prompt: "[E] 땅 인수하기 (다음 단계에서 오픈)",
+    closedMsg: "이스터 부동산은 다음 단계에서 오픈됩니다!",
+  },
+];
+
+// 맵 구조 (모두 layout()에서 계산)
+//  [오두막 마당] ──울타리/문(fenceX)── [원주민 마을] ── [바다(seaStart~worldW)]
+let worldW = 0;       // 맵 전체 가로 길이 (화면 가로의 2배)
+let fenceX = 0;       // 마당과 마을의 경계(울타리) x
+let gateY = 0;        // 울타리 통로 중심 y
+let gateTop = 0;      // 통로 위쪽 끝 y
+let gateBottom = 0;   // 통로 아래쪽 끝 y
+let seaStart = 0;     // 바다 시작 x
+let camX = 0;         // 카메라 x (화면 왼쪽 끝이 가리키는 맵 좌표)
 let speckles = [];    // 모래 질감 점
 let obstacles = [];   // 충돌 사각형
 let animT = 0;        // 애니메이션용 시간(초)
+let currentArea = ""; // 현재 위치 이름 (HUD 표시용)
 
 // ===== 4. 화면 크기 / 레이아웃 =====
 function layout() {
+  // 창 크기가 바뀌어도 캐릭터가 같은 지점에 머물도록 비율 기억
+  const hadWorld = worldW > 0;
+  const rx = hadWorld ? player.x / worldW : 0;
+  const ry = hadWorld ? player.y / canvas.height : 0;
+
   // 캔버스를 창 크기에 맞춰 꽉 채움 (회색 여백 없음)
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
@@ -152,8 +193,16 @@ function layout() {
   const W = canvas.width;
   const H = canvas.height;
 
-  seaStart = W * 0.8;
+  worldW = W * 2;          // 맵은 화면 2개 분량 (마당 + 마을)
+  fenceX = W * 0.88;       // 마당 오른쪽 경계
+  seaStart = worldW - W * 0.2; // 맵 맨 오른쪽 끝이 바다
 
+  // 울타리 통로
+  gateY = H * 0.75;
+  gateTop = gateY - 60;
+  gateBottom = gateY + 60;
+
+  // 오두막 마당
   hut.x = W * 0.08;
   hut.y = H * 0.14;
 
@@ -166,13 +215,34 @@ function layout() {
     tourist.y = moai.y + 12;
   }
 
+  // 원주민 마을
+  const vw = seaStart - fenceX; // 마을 가로 길이
+  const [shop, board, estate] = buildings;
+  shop.x = fenceX + vw * 0.12;
+  shop.y = H * 0.1;
+  board.x = fenceX + vw * 0.43;
+  board.y = H * 0.1;
+  estate.x = fenceX + vw * 0.68;
+  estate.y = H * 0.1;
+
+  villager.x = fenceX + vw * 0.5;
+  villager.y = H * 0.55;
+
   obstacles = [
+    // 오두막, 모아이
     { x: hut.x, y: hut.y, w: hut.w, h: hut.h },
     { x: moai.x - moai.w / 2, y: moai.y - moai.h, w: moai.w, h: moai.h },
+    // 울타리 (통로 부분만 비어 있음)
+    { x: fenceX - 6, y: 0, w: 12, h: gateTop },
+    { x: fenceX - 6, y: gateBottom, w: 12, h: H - gateBottom },
+    // 원주민
+    { x: villager.x - 14, y: villager.y - villager.ry, w: 28, h: villager.ry * 2 },
   ];
+  buildings.forEach((b) => obstacles.push({ x: b.x, y: b.y, w: b.w, h: b.h }));
 
+  // 모래 점 (바다 영역 제외)
   speckles = [];
-  const count = Math.floor((W * H) / 2500);
+  const count = Math.floor((seaStart * H) / 2500);
   for (let i = 0; i < count; i++) {
     speckles.push({
       x: Math.random() * seaStart,
@@ -181,7 +251,12 @@ function layout() {
     });
   }
 
+  if (hadWorld) {
+    player.x = rx * worldW;
+    player.y = ry * H;
+  }
   clampPlayer();
+  updateCamera(0, true);
 }
 
 function clampPlayer() {
@@ -194,12 +269,19 @@ function maxPlayerX() {
   return seaStart - 20 - player.rx;
 }
 
-// ===== 5. 메시지 / 골드 UI =====
-let messageUntil = 0; // 0이면 석상에서 멀어질 때 사라지는 메시지
+// 카메라: 플레이어를 따라 좌우로 스크롤 (맵 밖은 보이지 않게 제한)
+function updateCamera(dt, snap) {
+  const maxCam = Math.max(0, worldW - canvas.width);
+  const target = Math.max(0, Math.min(maxCam, player.x - canvas.width / 2));
+  camX = snap ? target : camX + (target - camX) * Math.min(1, dt * 8);
+}
 
-function showMessage(text, ms = 0) {
+// ===== 5. 메시지 / 골드 / 위치 UI =====
+let messageUntil = 0;
+
+function showMessage(text, ms = 2000) {
   messageEl.textContent = text;
-  messageUntil = ms ? performance.now() + ms : 0;
+  messageUntil = performance.now() + ms;
 }
 
 function updateGoldUI(bump = false) {
@@ -212,7 +294,80 @@ function updateGoldUI(bump = false) {
   }
 }
 
-// ===== 6. 키보드 입력 =====
+function setArea(name) {
+  if (currentArea === name) return;
+  currentArea = name;
+  areaTextEl.textContent = name;
+}
+
+// 마당 ↔ 마을 이동 감지 + 마을 첫 방문 처리
+function checkArea() {
+  const inVillage = player.x > fenceX;
+  setArea(inVillage ? "원주민 마을" : "오두막 마당");
+
+  if (inVillage && !save.villageVisited) {
+    save.villageVisited = true;
+    saveGame();
+    showMessage("원주민 마을에 도착했다! 가운데 있는 원주민에게 말을 걸어보자.", 4000);
+  }
+}
+
+// ===== 6. 상호작용 대상 찾기 =====
+function isNearMoai() {
+  const dx = player.x - moai.x;
+  const dy = player.y - (moai.y - moai.h / 2);
+  return Math.hypot(dx, dy) < moai.interactRange;
+}
+
+function nearPoint(o, range) {
+  return Math.hypot(player.x - o.x, player.y - o.y) < range;
+}
+
+// 플레이어와 사각형 사이의 가장 가까운 거리로 판정
+function nearRect(r, range) {
+  const px = Math.max(r.x, Math.min(player.x, r.x + r.w));
+  const py = Math.max(r.y, Math.min(player.y, r.y + r.h));
+  return Math.hypot(player.x - px, player.y - py) < range;
+}
+
+// 지금 E 키로 상호작용할 수 있는 대상 (없으면 null)
+function getTarget() {
+  if (dialogueActive || carveActive) return null;
+
+  // 모아이 석상 (턱을 깎은 뒤에는 안내 문구 없이 E만 반응)
+  if (isNearMoai()) {
+    return {
+      id: "moai",
+      label: save.isSharp ? null : "[E] 턱 깎기",
+      x: moai.x,
+      y: moai.y - moai.h,
+      below: false,
+    };
+  }
+
+  // 원주민 NPC
+  if (nearPoint(villager, 75)) {
+    return {
+      id: "villager",
+      label: "[E] 대화하기",
+      x: villager.x,
+      y: villager.y - villager.ry - 4,
+      below: false,
+    };
+  }
+
+  // 마을 건물: 소개 대화가 끝난 뒤에만 안내가 뜸
+  if (save.villageIntroDone) {
+    for (const b of buildings) {
+      if (nearRect(b, 55)) {
+        return { id: b.id, label: b.prompt, x: b.x + b.w / 2, y: b.y + b.h, below: true, building: b };
+      }
+    }
+  }
+  return null;
+}
+
+// ===== 7. 키보드 입력 =====
 // e.code는 물리적 키 위치라서 한글 입력 상태에서도 WASD가 동작합니다.
 const keys = {};
 
@@ -235,14 +390,7 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  // 자유 이동 모드: 모아이 근처에서 E 키
-  if (e.code === "KeyE" && isNearMoai()) {
-    if (save.isSharp) {
-      showMessage("이미 날렵한 V라인이다!", 2000);
-    } else {
-      openCarve();
-    }
-  }
+  if (e.code === "KeyE") interact();
 });
 
 window.addEventListener("keyup", (e) => {
@@ -259,7 +407,29 @@ window.addEventListener("mousedown", () => {
   if (dialogueActive) advanceDialogue();
 });
 
-// ===== 7. 대화 시스템 =====
+// E 키를 눌렀을 때 대상별 동작
+function interact() {
+  const target = getTarget();
+  if (!target) return;
+
+  switch (target.id) {
+    case "moai":
+      if (save.isSharp) showMessage("이미 날렵한 V라인이다!", 2000);
+      else openCarve();
+      break;
+
+    case "villager":
+      if (save.villageIntroDone) startDialogue(villagerRepeatScript);
+      else startDialogue(villageIntroScript, onVillageIntroEnd);
+      break;
+
+    default:
+      // 상점 / 홍보판 / 부동산: 다음 단계에서 오픈
+      if (target.building) showMessage(target.building.closedMsg, 2200);
+  }
+}
+
+// ===== 8. 대화 시스템 =====
 const tutorialScript = [
   { speaker: "주인공", text: "할아버지… 세상에 날 혼자 두고 가시면 어떡해요…." },
   { speaker: "주인공", text: "부모님도 없고, 일자리도 없고… 가진 거라곤 할아버지가 남겨주신 이스터 섬의 땅 한 평뿐이라니." },
@@ -277,6 +447,24 @@ const rewardScript = [
   { speaker: "관광객", text: "와! 세상에… 이 턱선 좀 봐! 진짜 베일 것 같잖아?!" },
   { speaker: "관광객", text: "이건 예술이에요! 팁으로 100골드 놓고 갑니다!" },
   { speaker: "주인공", text: "오… 진짜 돈을 주네? 이스터 섬에서 턱만 잘 깎아도 먹고살겠는데?!" },
+];
+
+// 원주민 마을 소개 대화 (처음 말을 걸었을 때)
+const villageIntroScript = [
+  { speaker: "원주민", text: "야호! 오두막에 새로 온 턱 조각가가 자네인가? 반갑네!" },
+  { speaker: "주인공", text: "아, 안녕하세요! 마을이 생각보다 왁자지껄하네요." },
+  { speaker: "원주민", text: "허허, 우리 마을에는 자네한테 필요한 곳이 아주 많다네. 잘 들어보게나!" },
+  { speaker: "원주민", text: "첫째, [도구 상점]! 더 좋은 망치와 조각칼을 사면 턱을 훨씬 날렵하고 빠르게 깎을 수 있지." },
+  { speaker: "원주민", text: "둘째, [홍보판]! 거기에 모아이 턱 자랑 홍보물을 붙이면 소문을 듣고 관광객들이 떼로 몰려온다네." },
+  { speaker: "원주민", text: "셋째, 가장 중요한 [이스터 부동산]!" },
+  { speaker: "주인공", text: "부동산이요?" },
+  { speaker: "원주민", text: "그렇다네! 돈을 모아서 섬의 구역들을 하나씩 '인수'할 수 있지. 구역을 '인수'하면 숨겨진 특이한 모아이 석상도 발굴할 수 있고, 이스터 섬의 진짜 비밀에 다가가게 된다네!" },
+  { speaker: "원주민", text: "열심히 턱을 깎아서 돈을 벌고, 꼭 이스터 섬 전체를 '인수'해 보게나! 기대하겠네!" },
+];
+
+// 소개를 이미 들은 뒤 다시 말을 걸었을 때
+const villagerRepeatScript = [
+  { speaker: "원주민", text: "열심히 턱을 깎아서 돈을 벌게나! [도구 상점], [홍보판], [이스터 부동산]을 잊지 말고!" },
 ];
 
 let dialogueScript = [];
@@ -304,7 +492,7 @@ function showLine() {
   dlgTextEl.textContent = "";
   dlgNextEl.style.visibility = "hidden";
 
-  // 관광객이 처음 말하는 줄부터 맵에 등장
+  // 튜토리얼에서 관광객이 처음 말하는 줄부터 맵에 등장
   if (line.speaker === "관광객") tourist.visible = true;
 
   // 타자기 효과로 한 글자씩 출력
@@ -364,10 +552,17 @@ function onRewardEnd() {
   showMessage("+100 Gold!", 2500);
   saveGame();
 
-  tourist.mode = "leaving"; // 관광객은 바다 쪽으로 돌아감
+  tourist.mode = "leaving"; // 관광객은 마을 쪽으로 돌아감
 }
 
-// ===== 8. 턱 깎기 미니게임 =====
+// 원주민 마을 소개 대화가 끝났을 때
+function onVillageIntroEnd() {
+  save.villageIntroDone = true;
+  saveGame();
+  showMessage("이제 마을 건물에 가까이 가 보자!", 3000);
+}
+
+// ===== 9. 턱 깎기 미니게임 =====
 let carveActive = false;     // 팝업이 열려 있는지
 let carveFinishing = false;  // 100% 도달 후 닫히는 중인지
 let carveProgress = 0;       // V라인 완성도 (0~100)
@@ -477,12 +672,12 @@ carveClose.addEventListener("click", () => {
   if (!carveFinishing) closeCarve();
 });
 
-// ===== 9. 관광객 보상 스토리 =====
-// 맵 오른쪽(바다 쪽)에서 등장해 석상 앞까지 걸어옴
+// ===== 10. 관광객 보상 스토리 =====
+// 마을 쪽 울타리 통로에서 등장해 석상 앞까지 걸어옴
 function startTouristVisit() {
   if (save.rewardDone) return;
-  tourist.x = seaStart - 30;
-  tourist.y = moai.y + 14;
+  tourist.x = fenceX + 30;
+  tourist.y = gateY;
   tourist.visible = true;
   tourist.mode = "arriving";
 }
@@ -491,8 +686,8 @@ function updateTourist(dt) {
   if (!tourist.visible || !tourist.mode) return;
 
   const arriving = tourist.mode === "arriving";
-  const tx = arriving ? moai.x + 85 : seaStart - 30;
-  const ty = arriving ? moai.y + 14 : tourist.y;
+  const tx = arriving ? moai.x + 85 : fenceX + 30;
+  const ty = arriving ? moai.y + 14 : gateY;
 
   const dx = tx - tourist.x;
   const dy = ty - tourist.y;
@@ -516,13 +711,7 @@ function updateTourist(dt) {
   }
 }
 
-// ===== 10. 유틸 함수 =====
-function isNearMoai() {
-  const dx = player.x - moai.x;
-  const dy = player.y - (moai.y - moai.h / 2);
-  return Math.hypot(dx, dy) < moai.interactRange;
-}
-
+// ===== 11. 유틸 함수 =====
 function hitsRect(px, py, r) {
   return (
     px + player.rx > r.x &&
@@ -541,7 +730,7 @@ function shoreX(y, t) {
   return seaStart + Math.sin(y * 0.02 + t * 2) * 8 + Math.sin(y * 0.05 - t * 1.3) * 4;
 }
 
-// ===== 11. 업데이트 =====
+// ===== 12. 업데이트 =====
 function update(dt) {
   // 시간이 지난 메시지 지우기
   if (messageUntil && performance.now() > messageUntil) {
@@ -552,67 +741,100 @@ function update(dt) {
   updateTourist(dt);
 
   // 대화 중이거나 팝업이 열려 있으면 이동 불가
-  if (dialogueActive || carveActive) return;
+  if (!dialogueActive && !carveActive) {
+    let dx = 0;
+    let dy = 0;
 
-  let dx = 0;
-  let dy = 0;
+    if (keys["ArrowLeft"] || keys["KeyA"]) dx -= 1;
+    if (keys["ArrowRight"] || keys["KeyD"]) dx += 1;
+    if (keys["ArrowUp"] || keys["KeyW"]) dy -= 1;
+    if (keys["ArrowDown"] || keys["KeyS"]) dy += 1;
 
-  if (keys["ArrowLeft"] || keys["KeyA"]) dx -= 1;
-  if (keys["ArrowRight"] || keys["KeyD"]) dx += 1;
-  if (keys["ArrowUp"] || keys["KeyW"]) dy -= 1;
-  if (keys["ArrowDown"] || keys["KeyS"]) dy += 1;
+    if (dx !== 0 && dy !== 0) {
+      dx *= Math.SQRT1_2;
+      dy *= Math.SQRT1_2;
+    }
 
-  if (dx !== 0 && dy !== 0) {
-    dx *= Math.SQRT1_2;
-    dy *= Math.SQRT1_2;
+    const nextX = player.x + dx * player.speed * dt;
+    if (!collides(nextX, player.y)) player.x = nextX;
+
+    const nextY = player.y + dy * player.speed * dt;
+    if (!collides(player.x, nextY)) player.y = nextY;
+
+    // 맵 경계(화면 + 해안선) 밖으로 나가지 않게 제한
+    clampPlayer();
+    checkArea();
   }
 
-  const nextX = player.x + dx * player.speed * dt;
-  if (!collides(nextX, player.y)) player.x = nextX;
-
-  const nextY = player.y + dy * player.speed * dt;
-  if (!collides(player.x, nextY)) player.y = nextY;
-
-  // 맵 경계(화면 + 해안선) 밖으로 나가지 않게 제한
-  clampPlayer();
-
-  if (!isNearMoai() && !messageUntil) messageEl.textContent = "";
+  updateCamera(dt, false);
 }
 
-// ===== 12. 그리기 =====
-function drawGround() {
+// ===== 13. 그리기 =====
+// 글자 가장자리에 검은 테두리를 둘러 모래색 배경에서도 읽기 쉽게 함
+function drawLabel(text, x, y, size = 13) {
+  ctx.font = `${size}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.65)";
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = "#fff";
+  ctx.fillText(text, x, y);
+}
+
+function drawGround(camDrawX) {
   const W = canvas.width;
   const H = canvas.height;
 
+  // 모래 바닥 (화면에 보이는 부분 전체 채움)
   ctx.fillStyle = "#e2c98f";
-  ctx.fillRect(0, 0, W, H);
+  ctx.fillRect(camDrawX, 0, W + 1, H);
 
   ctx.fillStyle = "rgba(150, 120, 60, 0.28)";
-  for (const s of speckles) ctx.fillRect(s.x, s.y, s.s, s.s);
+  for (const s of speckles) {
+    if (s.x > camDrawX - 8 && s.x < camDrawX + W + 8) ctx.fillRect(s.x, s.y, s.s, s.s);
+  }
+}
+
+// 마을 바닥(살짝 다른 톤) + 흙길
+function drawVillageGround() {
+  const H = canvas.height;
+  const [shop, , estate] = buildings;
+
+  ctx.fillStyle = "rgba(190, 150, 80, 0.14)";
+  ctx.fillRect(fenceX, 0, seaStart - fenceX, H);
+
+  // 흙길
+  ctx.fillStyle = "#d2b57c";
+  // 울타리 통로 → 마을 중앙
+  ctx.fillRect(fenceX - 70, gateY - 34, villager.x - (fenceX - 70), 68);
+  // 마을 중앙 → 건물 앞
+  const rowY = H * 0.1 + 128;
+  ctx.fillRect(villager.x - 28, rowY, 56, villager.y - rowY);
+  // 건물 앞 가로 길
+  ctx.fillRect(shop.x + shop.w / 2, rowY, estate.x + estate.w / 2 - (shop.x + shop.w / 2), 36);
 }
 
 function drawSea(t) {
-  const W = canvas.width;
   const H = canvas.height;
 
   // 젖은 모래 띠 (해안선 안쪽)
   ctx.fillStyle = "#c9ab6c";
   ctx.beginPath();
-  ctx.moveTo(W, 0);
+  ctx.moveTo(worldW, 0);
   for (let y = 0; y <= H; y += 8) ctx.lineTo(shoreX(y, t) - 22, y);
-  ctx.lineTo(W, H);
+  ctx.lineTo(worldW, H);
   ctx.closePath();
   ctx.fill();
 
   // 바다 본체
-  const grad = ctx.createLinearGradient(seaStart, 0, W, 0);
+  const grad = ctx.createLinearGradient(seaStart, 0, worldW, 0);
   grad.addColorStop(0, "#4fc3e8");
   grad.addColorStop(1, "#1565b8");
   ctx.fillStyle = grad;
   ctx.beginPath();
-  ctx.moveTo(W, 0);
+  ctx.moveTo(worldW, 0);
   for (let y = 0; y <= H; y += 8) ctx.lineTo(shoreX(y, t), y);
-  ctx.lineTo(W, H);
+  ctx.lineTo(worldW, H);
   ctx.closePath();
   ctx.fill();
 
@@ -630,7 +852,7 @@ function drawSea(t) {
   // 바다 안쪽의 물결 줄무늬
   ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
   ctx.lineWidth = 2;
-  const seaW = W - seaStart;
+  const seaW = worldW - seaStart;
   for (let row = 0; row < 14; row++) {
     const baseY = (row / 14) * H + ((t * 20) % (H / 14));
     ctx.beginPath();
@@ -644,6 +866,43 @@ function drawSea(t) {
   }
 }
 
+// 마당과 마을 사이의 울타리 + 통로 표지판
+function drawFence() {
+  const H = canvas.height;
+
+  // 가로대
+  ctx.fillStyle = "#7a5230";
+  ctx.fillRect(fenceX - 4, 0, 8, gateTop);
+  ctx.fillRect(fenceX - 4, gateBottom, 8, H - gateBottom);
+
+  // 기둥
+  ctx.fillStyle = "#5b3a1c";
+  for (let y = 0; y < H; y += 40) {
+    if (y + 20 > gateTop && y < gateBottom) continue; // 통로 부분은 비움
+    ctx.fillRect(fenceX - 8, y, 16, 22);
+  }
+
+  // 통로 양쪽 문기둥
+  ctx.fillStyle = "#4a2f16";
+  ctx.fillRect(fenceX - 10, gateTop - 8, 20, 16);
+  ctx.fillRect(fenceX - 10, gateBottom - 8, 20, 16);
+
+  // 표지판
+  const signW = 120;
+  const signH = 26;
+  const sx = fenceX - signW / 2;
+  const sy = gateTop - 40;
+  ctx.fillStyle = "#c9a46a";
+  ctx.fillRect(sx, sy, signW, signH);
+  ctx.strokeStyle = "#4e3016";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(sx, sy, signW, signH);
+  ctx.fillStyle = "#3b2410";
+  ctx.font = "bold 13px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("원주민 마을 ▶", fenceX, sy + 18);
+}
+
 function drawHut() {
   ctx.fillStyle = "#8b5a2b";
   ctx.fillRect(hut.x, hut.y, hut.w, hut.h);
@@ -653,10 +912,111 @@ function drawHut() {
   ctx.fillStyle = "#4e3016";
   ctx.fillRect(hut.x + hut.w / 2 - 14, hut.y + hut.h - 40, 28, 40);
 
-  ctx.fillStyle = "#fff";
-  ctx.font = "13px sans-serif";
+  drawLabel("낡은 오두막", hut.x + hut.w / 2, hut.y - 8);
+}
+
+// ----- 마을 건물 -----
+function drawShop(b) {
+  // 벽
+  ctx.fillStyle = "#a47148";
+  ctx.fillRect(b.x, b.y, b.w, b.h);
+  ctx.strokeStyle = "#4e3016";
+  ctx.lineWidth = 4;
+  ctx.strokeRect(b.x, b.y, b.w, b.h);
+
+  // 줄무늬 차양
+  const stripes = 6;
+  const sw = b.w / stripes;
+  for (let i = 0; i < stripes; i++) {
+    ctx.fillStyle = i % 2 === 0 ? "#d9534f" : "#ffffff";
+    ctx.fillRect(b.x + i * sw, b.y, sw, 24);
+  }
+  ctx.strokeRect(b.x, b.y, b.w, 24);
+
+  // 문 + 망치 아이콘
+  ctx.fillStyle = "#4e3016";
+  ctx.fillRect(b.x + b.w / 2 - 14, b.y + b.h - 42, 28, 42);
+  ctx.font = "24px sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText("낡은 오두막", hut.x + hut.w / 2, hut.y - 8);
+  ctx.fillText("🔨", b.x + 32, b.y + 68);
+
+  drawLabel(b.name, b.x + b.w / 2, b.y - 8);
+}
+
+function drawBoard(b) {
+  const boardH = b.h - 26;
+
+  // 다리(기둥)
+  ctx.fillStyle = "#5b3a1c";
+  ctx.fillRect(b.x + 14, b.y + boardH, 9, 26);
+  ctx.fillRect(b.x + b.w - 23, b.y + boardH, 9, 26);
+
+  // 판
+  ctx.fillStyle = "#c9a46a";
+  ctx.fillRect(b.x, b.y, b.w, boardH);
+  ctx.strokeStyle = "#4e3016";
+  ctx.lineWidth = 4;
+  ctx.strokeRect(b.x, b.y, b.w, boardH);
+
+  // 붙어 있는 홍보물 (빈 종이들)
+  const papers = [
+    { dx: 10, dy: 10, w: 28, h: 22, c: "#ffffff" },
+    { dx: 46, dy: 8, w: 24, h: 28, c: "#fff2a8" },
+    { dx: 78, dy: 12, w: 22, h: 20, c: "#ffd1dc" },
+    { dx: 18, dy: 38, w: 30, h: 18, c: "#cfe8ff" },
+    { dx: 58, dy: 40, w: 26, h: 16, c: "#ffffff" },
+  ];
+  for (const p of papers) {
+    ctx.fillStyle = p.c;
+    ctx.fillRect(b.x + p.dx, b.y + p.dy, p.w, p.h);
+    ctx.fillStyle = "#d9534f"; // 압정
+    ctx.fillRect(b.x + p.dx + p.w / 2 - 2, b.y + p.dy + 1, 4, 4);
+  }
+
+  drawLabel(b.name, b.x + b.w / 2, b.y - 8);
+}
+
+function drawEstate(b) {
+  // 벽
+  ctx.fillStyle = "#7a93b5";
+  ctx.fillRect(b.x, b.y, b.w, b.h);
+  ctx.strokeStyle = "#2f3f58";
+  ctx.lineWidth = 4;
+  ctx.strokeRect(b.x, b.y, b.w, b.h);
+
+  // 지붕 띠
+  ctx.fillStyle = "#3b4a63";
+  ctx.fillRect(b.x, b.y, b.w, 28);
+  ctx.strokeRect(b.x, b.y, b.w, 28);
+
+  // 창문 2개
+  ctx.fillStyle = "#cfe8ff";
+  ctx.fillRect(b.x + 18, b.y + 44, 32, 28);
+  ctx.fillRect(b.x + b.w - 50, b.y + 44, 32, 28);
+  ctx.strokeStyle = "#2f3f58";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(b.x + 18, b.y + 44, 32, 28);
+  ctx.strokeRect(b.x + b.w - 50, b.y + 44, 32, 28);
+
+  // 문
+  ctx.fillStyle = "#2f3f58";
+  ctx.fillRect(b.x + b.w / 2 - 15, b.y + b.h - 44, 30, 44);
+
+  // 지붕 위 '땅' 표지
+  ctx.fillStyle = "#ffd54a";
+  ctx.font = "bold 14px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("★ 땅 ★", b.x + b.w / 2, b.y + 19);
+
+  drawLabel(b.name, b.x + b.w / 2, b.y - 8);
+}
+
+function drawBuildings() {
+  for (const b of buildings) {
+    if (b.id === "shop") drawShop(b);
+    else if (b.id === "board") drawBoard(b);
+    else if (b.id === "estate") drawEstate(b);
+  }
 }
 
 // 석상 발밑 그림자 (두 모양 공통)
@@ -764,6 +1124,22 @@ function drawTourist() {
   drawBlob(tourist, "#ff8a3d", "#a34a10"); // 주황색 관광객
 }
 
+function drawVillager() {
+  drawBlob(villager, "#6fa83a", "#3d6a1a"); // 초록색 원주민
+
+  // 머리 깃털 장식
+  const hx = villager.x;
+  const hy = villager.y - villager.ry;
+  ctx.fillStyle = "#e53935";
+  ctx.fillRect(hx - 7, hy - 8, 4, 10);
+  ctx.fillStyle = "#ffd54a";
+  ctx.fillRect(hx - 2, hy - 11, 4, 13);
+  ctx.fillStyle = "#1e88e5";
+  ctx.fillRect(hx + 3, hy - 8, 4, 10);
+
+  drawLabel("원주민", villager.x, villager.y + villager.ry + 16, 12);
+}
+
 function roundedRectPath(x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -774,14 +1150,17 @@ function roundedRectPath(x, y, w, h, r) {
   ctx.closePath();
 }
 
-function drawPrompt() {
-  const text = "[E] 턱 깎기";
+// 상호작용 안내 말풍선
+function drawPrompt(target, camDrawX) {
+  const text = target.label;
   ctx.font = "bold 16px sans-serif";
   const padding = 12;
   const boxW = ctx.measureText(text).width + padding * 2;
   const boxH = 32;
-  const boxX = moai.x - boxW / 2;
-  const boxY = Math.max(4, moai.y - moai.h - boxH - 14);
+
+  let boxX = target.x - boxW / 2;
+  boxX = Math.max(camDrawX + 4, Math.min(camDrawX + canvas.width - boxW - 4, boxX)); // 화면 밖으로 안 나가게
+  const boxY = target.below ? target.y + 8 : Math.max(4, target.y - boxH - 14);
 
   roundedRectPath(boxX, boxY, boxW, boxH, 8);
   ctx.fillStyle = "rgba(20, 20, 20, 0.85)";
@@ -793,31 +1172,42 @@ function drawPrompt() {
   ctx.fillStyle = "#ffd54a";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(text, moai.x, boxY + boxH / 2);
+  ctx.fillText(text, boxX + boxW / 2, boxY + boxH / 2);
   ctx.textBaseline = "alphabetic";
 }
 
 function draw(t) {
   animT = t;
+  const camDrawX = Math.round(camX);
 
-  drawGround();
+  ctx.save();
+  ctx.translate(-camDrawX, 0); // 이후는 모두 '맵 좌표'로 그림
+
+  drawGround(camDrawX);
+  drawVillageGround();
   drawSea(t);
+  drawFence();
   drawHut();
+  drawBuildings();
 
   // y(발밑) 기준으로 정렬해서 아래쪽에 있는 것이 위에 그려지게 함
   const list = [
     { y: moai.y, fn: save.isSharp ? drawMoaiV : drawMoai },
     { y: player.y + player.ry, fn: drawPlayer },
+    { y: villager.y + villager.ry, fn: drawVillager },
   ];
   if (tourist.visible) list.push({ y: tourist.y + tourist.ry, fn: drawTourist });
   list.sort((a, b) => a.y - b.y);
   list.forEach((o) => o.fn());
 
-  // 아직 턱을 깎지 않았고 자유 이동 중일 때만 안내 표시
-  if (!dialogueActive && !carveActive && !save.isSharp && isNearMoai()) drawPrompt();
+  // 상호작용 안내
+  const target = getTarget();
+  if (target && target.label) drawPrompt(target, camDrawX);
+
+  ctx.restore();
 }
 
-// ===== 13. 게임 루프 =====
+// ===== 14. 게임 루프 =====
 let lastTime = performance.now();
 
 function loop(now) {
@@ -829,7 +1219,7 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
-// ===== 14. 리셋 버튼 =====
+// ===== 15. 리셋 버튼 =====
 // 버튼을 눌러도 대화가 넘어가지 않도록 클릭 전파를 막음
 resetBtn.addEventListener("mousedown", (e) => e.stopPropagation());
 
@@ -847,7 +1237,7 @@ resetBtn.addEventListener("click", () => {
   location.reload(); // 초기 상태(튜토리얼)부터 다시 시작
 });
 
-// ===== 15. 자동 저장 =====
+// ===== 16. 자동 저장 =====
 // 위치는 계속 바뀌므로 주기적으로 + 탭을 닫거나 숨길 때 저장
 setInterval(saveGame, 3000);
 window.addEventListener("beforeunload", saveGame);
@@ -856,20 +1246,24 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") saveGame();
 });
 
-// ===== 16. 시작 =====
+// ===== 17. 시작 =====
 window.addEventListener("resize", layout);
 layout();
 updateGoldUI();
 
 // 저장된 위치(비율)를 복원. 장애물 안에 끼는 위치면 기본 위치로 대체
-player.x = save.playerPos.x * canvas.width;
+player.x = save.playerPos.x * worldW;
 player.y = save.playerPos.y * canvas.height;
 clampPlayer();
 if (collides(player.x, player.y)) {
-  player.x = DEFAULT_PLAYER_POS.x * canvas.width;
+  player.x = DEFAULT_PLAYER_POS.x * worldW;
   player.y = DEFAULT_PLAYER_POS.y * canvas.height;
   clampPlayer();
 }
+
+// 현재 위치 표시 + 카메라를 플레이어에게 바로 맞춤
+setArea(player.x > fenceX ? "원주민 마을" : "오두막 마당");
+updateCamera(0, true);
 
 ready = true;
 

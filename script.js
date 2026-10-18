@@ -2,12 +2,48 @@
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 const messageEl = document.getElementById("message");
+const goldTextEl = document.getElementById("goldText");
 
 // 대화창 요소
 const dialogueEl = document.getElementById("dialogue");
 const dlgNameEl = document.getElementById("dlgName");
 const dlgTextEl = document.getElementById("dlgText");
 const dlgNextEl = document.getElementById("dlgNext");
+
+// 턱 깎기 모달 요소
+const carveModal = document.getElementById("carveModal");
+const carvePanel = document.getElementById("carvePanel");
+const carveStage = document.getElementById("carveStage");
+const chinEl = document.getElementById("chinShape");
+const gaugeFill = document.getElementById("gaugeFill");
+const gaugeText = document.getElementById("gaugeText");
+const carveDoneEl = document.getElementById("carveDone");
+const carveBtn = document.getElementById("carveBtn");
+const carveClose = document.getElementById("carveClose");
+
+// ===== 저장 데이터 (localStorage) =====
+const SAVE_KEY = "easterChinSave";
+const defaultSave = { gold: 0, tutorialDone: false, chinDone: false, rewardDone: false };
+
+function loadSave() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (raw) return { ...defaultSave, ...JSON.parse(raw) };
+  } catch (err) {
+    console.warn("저장 데이터를 불러올 수 없습니다:", err);
+  }
+  return { ...defaultSave };
+}
+
+function saveGame() {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(save));
+  } catch (err) {
+    console.warn("저장에 실패했습니다:", err);
+  }
+}
+
+const save = loadSave();
 
 // ===== 게임 오브젝트 =====
 // 주인공 (파란 타원형 도트)
@@ -19,8 +55,9 @@ const hut = { x: 0, y: 0, w: 150, h: 110 };
 // 모아이 석상 (x, y는 발밑 중심 좌표)
 const moai = { x: 0, y: 0, w: 56, h: 110, interactRange: 90 };
 
-// 관광객 NPC (대화 4번째 줄부터 등장)
-const tourist = { x: 0, y: 0, rx: 12, ry: 16, visible: false };
+// 관광객 NPC
+// mode: null(대기) | "arriving"(석상 앞으로 걸어오는 중) | "leaving"(바다 쪽으로 돌아가는 중)
+const tourist = { x: 0, y: 0, rx: 12, ry: 16, speed: 110, visible: false, mode: null };
 
 // 바다 시작 x좌표 (화면 오른쪽 약 20%가 바다)
 let seaStart = 0;
@@ -31,9 +68,11 @@ let speckles = [];
 // 충돌 판정용 사각형 목록
 let obstacles = [];
 
+// 애니메이션용 시간(초)
+let animT = 0;
+
 // ===== 화면 크기 / 레이아웃 =====
 function layout() {
-  // 캔버스 해상도를 창 크기와 동일하게 맞춰서 빈 여백이 생기지 않게 함
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
 
@@ -48,8 +87,11 @@ function layout() {
   moai.x = W * 0.5;
   moai.y = H * 0.55;
 
-  tourist.x = moai.x - 95;
-  tourist.y = moai.y + 12;
+  // 걷는 중이 아닐 때만 튜토리얼용 기본 위치로 맞춤
+  if (!tourist.mode) {
+    tourist.x = moai.x - 95;
+    tourist.y = moai.y + 12;
+  }
 
   obstacles = [
     { x: hut.x, y: hut.y, w: hut.w, h: hut.h },
@@ -80,6 +122,24 @@ function maxPlayerX() {
   return seaStart - 20 - player.rx;
 }
 
+// ===== 메시지 / 골드 UI =====
+let messageUntil = 0; // 0이면 석상에서 멀어질 때 사라지는 메시지
+
+function showMessage(text, ms = 0) {
+  messageEl.textContent = text;
+  messageUntil = ms ? performance.now() + ms : 0;
+}
+
+function updateGoldUI(bump = false) {
+  goldTextEl.textContent = save.gold;
+  if (bump) {
+    const box = goldTextEl.parentElement;
+    box.classList.remove("bump");
+    void box.offsetWidth; // 애니메이션 재시작
+    box.classList.add("bump");
+  }
+}
+
 // ===== 키보드 입력 =====
 // e.code는 물리적 키 위치라서 한글 입력 상태에서도 WASD가 동작합니다.
 const keys = {};
@@ -91,6 +151,12 @@ window.addEventListener("keydown", (e) => {
   keys[e.code] = true;
   if (e.repeat) return;
 
+  // 턱 깎기 팝업이 열려 있을 때: Esc로 닫기
+  if (carveActive) {
+    if (e.code === "Escape" && !carveFinishing) closeCarve();
+    return;
+  }
+
   // 대화 중에는 Enter로만 진행
   if (dialogueActive) {
     if (e.code === "Enter" || e.code === "NumpadEnter") advanceDialogue();
@@ -99,7 +165,11 @@ window.addEventListener("keydown", (e) => {
 
   // 자유 이동 모드: 모아이 근처에서 E 키
   if (e.code === "KeyE" && isNearMoai()) {
-    messageEl.textContent = "턱 깎기는 다음 단계(Step 3)에서 구현됩니다!";
+    if (save.chinDone) {
+      showMessage("이미 완벽한 V라인이다!", 2000);
+    } else {
+      openCarve();
+    }
   }
 });
 
@@ -112,8 +182,8 @@ window.addEventListener("mousedown", () => {
   if (dialogueActive) advanceDialogue();
 });
 
-// ===== 튜토리얼 대화 시스템 =====
-const dialogueScript = [
+// ===== 대화 시스템 =====
+const tutorialScript = [
   { speaker: "주인공", text: "할아버지… 세상에 날 혼자 두고 가시면 어떡해요…." },
   { speaker: "주인공", text: "부모님도 없고, 일자리도 없고… 가진 거라곤 할아버지가 남겨주신 이스터 섬의 땅 한 평뿐이라니." },
   { speaker: "주인공", text: "음? 휑한 오두막 안에 웬 망치랑 조각 칼이 있지?… 쳇, 줘도 이런 걸 주시고." },
@@ -125,6 +195,15 @@ const dialogueScript = [
   { speaker: "주인공", text: "(손에 망치를 쥐며) 에라, 모르겠다. 깎아본다!" },
 ];
 
+// 턱 깎기 완료 후 관광객 보상 대화
+const rewardScript = [
+  { speaker: "관광객", text: "와! 세상에… 이 턱선 좀 봐! 진짜 베일 것 같잖아?!" },
+  { speaker: "관광객", text: "이건 예술이에요! 팁으로 100골드 놓고 갑니다!" },
+  { speaker: "주인공", text: "오… 진짜 돈을 주네? 이스터 섬에서 턱만 잘 깎아도 먹고살겠는데?!" },
+];
+
+let dialogueScript = [];
+let dialogueOnEnd = null;
 let dialogueActive = false;
 let dialogueIndex = 0;
 let typingTimer = null;
@@ -132,7 +211,9 @@ let typing = false;
 let currentFullText = "";
 const TYPE_SPEED = 35; // 글자당 ms
 
-function startDialogue() {
+function startDialogue(script, onEnd) {
+  dialogueScript = script;
+  dialogueOnEnd = onEnd || null;
   dialogueActive = true;
   dialogueIndex = 0;
   dialogueEl.classList.remove("hidden");
@@ -185,7 +266,170 @@ function advanceDialogue() {
 function endDialogue() {
   dialogueActive = false;
   dialogueEl.classList.add("hidden");
-  // 이제부터 자유 이동 + [E] 상호작용 가능
+
+  const callback = dialogueOnEnd;
+  dialogueOnEnd = null;
+  if (callback) callback();
+}
+
+// 튜토리얼 대화가 끝났을 때
+function onTutorialEnd() {
+  save.tutorialDone = true;
+  saveGame();
+  tourist.visible = false; // 관광객은 잠시 자리를 비움 (턱을 깎으면 다시 등장)
+}
+
+// 보상 대화가 끝났을 때: +100 골드
+function onRewardEnd() {
+  save.rewardDone = true;
+  save.gold += 100;
+  saveGame();
+  updateGoldUI(true);
+  showMessage("+100 Gold!", 2500);
+
+  tourist.mode = "leaving"; // 관광객은 바다 쪽으로 돌아감
+}
+
+// ===== 턱 깎기 미니게임 =====
+let carveActive = false;     // 팝업이 열려 있는지
+let carveFinishing = false;  // 100% 도달 후 닫히는 중인지
+let carveProgress = 0;       // V라인 완성도 (0~100)
+
+function openCarve() {
+  carveActive = true;
+  carveFinishing = false;
+  carveDoneEl.classList.add("hidden");
+  carveModal.classList.remove("hidden");
+  messageEl.textContent = "";
+  renderCarve();
+}
+
+function closeCarve() {
+  carveActive = false;
+  carveModal.classList.add("hidden");
+}
+
+// 게이지와 팝업 속 석상의 턱 모양을 진행도에 맞춰 갱신
+function renderCarve() {
+  gaugeFill.style.width = carveProgress + "%";
+  gaugeText.textContent = carveProgress + "%";
+
+  const p = carveProgress / 100;
+  const cx = 120;                  // 석상 중심 x
+  const topY = 138;                // 턱이 시작되는 y
+  const wTop = 56;                 // 턱 윗부분 반너비
+  const wBot = 52 * (1 - p) + 5 * p;     // 아랫부분 반너비: 넓음 → 뾰족
+  const botY = 205 + 35 * p;             // 턱 끝: 점점 길어짐
+
+  chinEl.setAttribute(
+    "points",
+    `${cx - wTop},${topY} ${cx + wTop},${topY} ${cx + wBot},${botY} ${cx - wBot},${botY}`
+  );
+}
+
+// 타격 시 튀는 돌 조각 생성
+function spawnChips(clientX, clientY) {
+  const rect = carveStage.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
+
+  for (let i = 0; i < 7; i++) {
+    const chip = document.createElement("div");
+    chip.className = "chip";
+    chip.style.left = x + "px";
+    chip.style.top = y + "px";
+    chip.style.setProperty("--dx", (Math.random() * 90 - 45) + "px");
+    chip.style.setProperty("--dy", (Math.random() * 70 - 35) + "px");
+    carveStage.appendChild(chip);
+    setTimeout(() => chip.remove(), 550);
+  }
+}
+
+function shakePanel() {
+  carvePanel.classList.remove("shake");
+  void carvePanel.offsetWidth; // 애니메이션 재시작
+  carvePanel.classList.add("shake");
+}
+
+// 망치질 한 번
+function hitChin(clientX, clientY) {
+  if (carveFinishing) return;
+
+  // 클릭 위치가 없으면(버튼으로 친 경우) 턱 중앙에서 조각이 튐
+  if (clientX === undefined) {
+    const r = chinEl.getBoundingClientRect();
+    clientX = r.left + r.width / 2;
+    clientY = r.top + r.height / 2;
+  }
+
+  carveProgress = Math.min(100, carveProgress + 7 + Math.floor(Math.random() * 4));
+  shakePanel();
+  spawnChips(clientX, clientY);
+  renderCarve();
+
+  if (carveProgress >= 100) finishCarve();
+}
+
+function finishCarve() {
+  carveFinishing = true;
+  carveDoneEl.classList.remove("hidden"); // "완벽한 V라인 완성!"
+
+  setTimeout(() => {
+    closeCarve();
+    save.chinDone = true; // 이제부터 맵의 석상이 V라인으로 그려짐
+    saveGame();
+
+    // 잠시 후 관광객이 등장
+    setTimeout(startTouristVisit, 1500);
+  }, 1500);
+}
+
+chinEl.addEventListener("click", (e) => hitChin(e.clientX, e.clientY));
+carveBtn.addEventListener("click", () => {
+  carveBtn.blur(); // Space/Enter로 다시 눌리는 것 방지
+  hitChin();
+});
+carveClose.addEventListener("click", () => {
+  carveClose.blur();
+  if (!carveFinishing) closeCarve();
+});
+
+// ===== 관광객 보상 스토리 =====
+// 맵 오른쪽(바다 쪽)에서 등장해 석상 앞까지 걸어옴
+function startTouristVisit() {
+  tourist.x = seaStart - 30;
+  tourist.y = moai.y + 14;
+  tourist.visible = true;
+  tourist.mode = "arriving";
+}
+
+function updateTourist(dt) {
+  if (!tourist.visible || !tourist.mode) return;
+
+  const arriving = tourist.mode === "arriving";
+  const tx = arriving ? moai.x + 85 : seaStart - 30;
+  const ty = arriving ? moai.y + 14 : tourist.y;
+
+  const dx = tx - tourist.x;
+  const dy = ty - tourist.y;
+  const dist = Math.hypot(dx, dy);
+  const step = tourist.speed * dt;
+
+  if (dist <= step) {
+    // 도착
+    tourist.x = tx;
+    tourist.y = ty;
+    tourist.mode = null;
+
+    if (arriving) {
+      startDialogue(rewardScript, onRewardEnd);
+    } else {
+      tourist.visible = false;
+    }
+  } else {
+    tourist.x += (dx / dist) * step;
+    tourist.y += (dy / dist) * step;
+  }
 }
 
 // ===== 유틸 함수 =====
@@ -215,7 +459,16 @@ function shoreX(y, t) {
 
 // ===== 업데이트 =====
 function update(dt) {
-  if (dialogueActive) return; // 대화 중에는 이동 불가
+  // 시간이 지난 메시지 지우기
+  if (messageUntil && performance.now() > messageUntil) {
+    messageEl.textContent = "";
+    messageUntil = 0;
+  }
+
+  updateTourist(dt);
+
+  // 대화 중이거나 팝업이 열려 있으면 이동 불가
+  if (dialogueActive || carveActive) return;
 
   let dx = 0;
   let dy = 0;
@@ -239,7 +492,7 @@ function update(dt) {
   // 맵 경계(화면 + 바다 앞 해안선) 밖으로 나가지 않게 제한
   clampPlayer();
 
-  if (!isNearMoai()) messageEl.textContent = "";
+  if (!isNearMoai() && !messageUntil) messageEl.textContent = "";
 }
 
 // ===== 그리기 =====
@@ -247,11 +500,9 @@ function drawGround() {
   const W = canvas.width;
   const H = canvas.height;
 
-  // 모래 바닥 (전체 채움)
   ctx.fillStyle = "#e2c98f";
   ctx.fillRect(0, 0, W, H);
 
-  // 모래 점/돌
   ctx.fillStyle = "rgba(150, 120, 60, 0.28)";
   for (const s of speckles) ctx.fillRect(s.x, s.y, s.s, s.s);
 }
@@ -269,7 +520,7 @@ function drawSea(t) {
   ctx.closePath();
   ctx.fill();
 
-  // 바다 본체 (가로 그라데이션: 얕은 곳 → 깊은 곳)
+  // 바다 본체
   const grad = ctx.createLinearGradient(seaStart, 0, W, 0);
   grad.addColorStop(0, "#4fc3e8");
   grad.addColorStop(1, "#1565b8");
@@ -292,7 +543,7 @@ function drawSea(t) {
   }
   ctx.stroke();
 
-  // 바다 안쪽의 물결 줄무늬 (천천히 밀려옴)
+  // 바다 안쪽의 물결 줄무늬
   ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
   ctx.lineWidth = 2;
   const seaW = W - seaStart;
@@ -324,14 +575,20 @@ function drawHut() {
   ctx.fillText("낡은 오두막", hut.x + hut.w / 2, hut.y - 8);
 }
 
-function drawMoai() {
-  const left = moai.x - moai.w / 2;
-  const top = moai.y - moai.h;
-
+// 석상 발밑 그림자 (두 모양 공통)
+function drawMoaiShadow() {
   ctx.fillStyle = "rgba(0, 0, 0, 0.2)";
   ctx.beginPath();
   ctx.ellipse(moai.x, moai.y, moai.w * 0.7, 10, 0, 0, Math.PI * 2);
   ctx.fill();
+}
+
+// 턱 깎기 전: 투박한 네모 턱의 모아이
+function drawMoai() {
+  const left = moai.x - moai.w / 2;
+  const top = moai.y - moai.h;
+
+  drawMoaiShadow();
 
   ctx.fillStyle = "#8d8d8d";
   ctx.fillRect(left, top, moai.w, moai.h);
@@ -352,6 +609,51 @@ function drawMoai() {
   ctx.strokeStyle = "#444";
   ctx.lineWidth = 3;
   ctx.strokeRect(left, top, moai.w, moai.h);
+}
+
+// 턱 깎은 후: 뾰족하고 날렵한 V라인 모아이
+function drawMoaiV() {
+  const left = moai.x - moai.w / 2;
+  const right = moai.x + moai.w / 2;
+  const top = moai.y - moai.h;
+
+  drawMoaiShadow();
+
+  // 몸통
+  ctx.fillStyle = "#7b7b7b";
+  ctx.fillRect(left, top + 60, moai.w, moai.h - 60);
+  ctx.strokeStyle = "#444";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(left, top + 60, moai.w, moai.h - 60);
+
+  // 머리: 아래로 갈수록 좁아지는 V자 턱
+  ctx.fillStyle = "#a8a8a8";
+  ctx.beginPath();
+  ctx.moveTo(left - 4, top);
+  ctx.lineTo(right + 4, top);
+  ctx.lineTo(right + 4, top + 42);
+  ctx.lineTo(moai.x + 5, top + 96);
+  ctx.lineTo(moai.x - 5, top + 96);
+  ctx.lineTo(left - 4, top + 42);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // 눈썹 그늘 / 코 / 입
+  ctx.fillStyle = "#5f5f5f";
+  ctx.fillRect(left - 4 + 2, top + 14, moai.w + 4, 8);
+  ctx.fillStyle = "#757575";
+  ctx.fillRect(moai.x - 5, top + 20, 10, 26);
+  ctx.fillStyle = "#4a4a4a";
+  ctx.fillRect(moai.x - 12, top + 58, 24, 4);
+
+  // 반짝이는 효과
+  const a = 0.4 + 0.6 * ((Math.sin(animT * 5) + 1) / 2);
+  const sx = right + 16;
+  const sy = top + 34;
+  ctx.fillStyle = `rgba(255, 235, 120, ${a})`;
+  ctx.fillRect(sx - 1, sy - 8, 3, 16);
+  ctx.fillRect(sx - 8, sy - 1, 16, 3);
 }
 
 // 타원형 캐릭터 공통 그리기
@@ -412,20 +714,23 @@ function drawPrompt() {
 }
 
 function draw(t) {
+  animT = t;
+
   drawGround();
   drawSea(t);
   drawHut();
 
   // y(발밑) 기준으로 정렬해서 아래쪽에 있는 것이 위에 그려지게 함
   const list = [
-    { y: moai.y, fn: drawMoai },
+    { y: moai.y, fn: save.chinDone ? drawMoaiV : drawMoai },
     { y: player.y + player.ry, fn: drawPlayer },
   ];
   if (tourist.visible) list.push({ y: tourist.y + tourist.ry, fn: drawTourist });
   list.sort((a, b) => a.y - b.y);
   list.forEach((o) => o.fn());
 
-  if (!dialogueActive && isNearMoai()) drawPrompt();
+  // 아직 턱을 깎지 않았고 자유 이동 중일 때만 안내 표시
+  if (!dialogueActive && !carveActive && !save.chinDone && isNearMoai()) drawPrompt();
 }
 
 // ===== 게임 루프 =====
@@ -462,12 +767,19 @@ resetBtn.addEventListener("click", () => {
 // ===== 시작 =====
 window.addEventListener("resize", layout);
 layout();
+updateGoldUI();
 
 // 주인공 시작 위치 (오두막 앞쪽)
 player.x = canvas.width * 0.3;
 player.y = canvas.height * 0.75;
 clampPlayer();
 
-// 관광객 위치는 layout()에서 계산됨 → 게임 시작과 동시에 튜토리얼 대화 시작
-startDialogue();
+if (!save.tutorialDone) {
+  // 처음 시작: 튜토리얼 대화
+  startDialogue(tutorialScript, onTutorialEnd);
+} else if (save.chinDone && !save.rewardDone) {
+  // 턱은 깎았지만 보상을 아직 못 받고 새로고침한 경우
+  setTimeout(startTouristVisit, 1000);
+}
+
 requestAnimationFrame(loop);

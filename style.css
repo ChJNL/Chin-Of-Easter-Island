@@ -29,10 +29,27 @@ body {
   left: 12px;
   padding: 6px 12px;
   font-size: 13px;
+  line-height: 1.6;
   color: #fff;
   background: rgba(0, 0, 0, 0.5);
   border: 2px solid #fff;
   pointer-events: none;
+}
+
+.hud .gold {
+  color: #ffd54a;
+  font-size: 15px;
+}
+
+/* 골드가 오를 때 살짝 튀는 효과 */
+.hud .gold.bump {
+  animation: goldBump 0.6s ease-out;
+}
+
+@keyframes goldBump {
+  0%   { transform: scale(1); }
+  30%  { transform: scale(1.25); color: #fff; }
+  100% { transform: scale(1); }
 }
 
 /* ===== 초기화 버튼 ===== */
@@ -135,4 +152,180 @@ body {
   50% {
     opacity: 0;
   }
+}
+
+/* ===== 턱 깎기 모달 ===== */
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.65);
+}
+
+.modal.hidden {
+  display: none;
+}
+
+.carve-panel {
+  position: relative;
+  width: min(520px, 94vw);
+  max-height: 96vh;
+  padding: 22px 24px 20px;
+  color: #fff;
+  text-align: center;
+  background: rgba(10, 10, 25, 0.95);
+  border: 4px solid #fff;
+  box-shadow: 0 0 0 4px #000, 6px 6px 0 6px rgba(0, 0, 0, 0.5);
+  user-select: none;
+}
+
+/* 타격 시 팝업이 흔들리는 애니메이션 */
+.carve-panel.shake {
+  animation: panelShake 0.25s linear;
+}
+
+@keyframes panelShake {
+  0%   { transform: translate(0, 0); }
+  20%  { transform: translate(-7px, 3px); }
+  40%  { transform: translate(7px, -3px); }
+  60%  { transform: translate(-4px, -2px); }
+  80%  { transform: translate(4px, 2px); }
+  100% { transform: translate(0, 0); }
+}
+
+.carve-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  font-family: inherit;
+  font-size: 14px;
+  color: #fff;
+  background: transparent;
+  border: 2px solid #fff;
+  cursor: pointer;
+}
+
+.carve-close:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* 게이지 */
+.gauge-head {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 36px 6px 0;
+  font-size: 15px;
+  color: #ffd54a;
+}
+
+.gauge {
+  height: 26px;
+  background: #222;
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 3px #000;
+  overflow: hidden;
+}
+
+.gauge-fill {
+  width: 0%;
+  height: 100%;
+  background: repeating-linear-gradient(
+    90deg,
+    #ffd54a 0 10px,
+    #ffb300 10px 20px
+  );
+  transition: width 0.15s ease-out;
+}
+
+/* 석상 영역 */
+.carve-stage {
+  position: relative;
+  margin: 14px 0 8px;
+}
+
+#carveSvg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 40vh;
+}
+
+/* 클릭할 턱: 망치 커서 + 깜빡이는 점선 */
+.chin {
+  cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><text y='26' font-size='26'>🔨</text></svg>") 4 28, pointer;
+  animation: chinPulse 1s ease-in-out infinite;
+}
+
+@keyframes chinPulse {
+  50% {
+    stroke-opacity: 0.3;
+  }
+}
+
+/* 튀는 돌 조각 */
+.chip {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: #b0b0b0;
+  border: 1px solid #444;
+  pointer-events: none;
+  animation: chipFly 0.5s ease-out forwards;
+}
+
+@keyframes chipFly {
+  to {
+    transform: translate(var(--dx), var(--dy)) rotate(200deg);
+    opacity: 0;
+  }
+}
+
+/* 완성 메시지 */
+.carve-done {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 90%;
+  padding: 14px 8px;
+  font-size: 24px;
+  color: #ffd54a;
+  background: rgba(0, 0, 0, 0.82);
+  border: 3px solid #ffd54a;
+  animation: donePop 0.4s ease-out;
+}
+
+.carve-done.hidden {
+  display: none;
+}
+
+@keyframes donePop {
+  from { transform: translate(-50%, -50%) scale(0.5); opacity: 0; }
+  to   { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+}
+
+.carve-guide {
+  margin-bottom: 12px;
+  font-size: 14px;
+  color: #cfd3e6;
+}
+
+.carve-btn {
+  padding: 10px 22px;
+  font-family: inherit;
+  font-size: 16px;
+  color: #000;
+  background: #ffd54a;
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 3px #000;
+  cursor: pointer;
+}
+
+.carve-btn:active {
+  transform: translateY(2px);
 }

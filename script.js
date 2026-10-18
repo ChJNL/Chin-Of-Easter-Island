@@ -1,8 +1,37 @@
-// ===== 기본 설정 =====
+// ============================================================
+// 이스터 섬의 턱 - script.js
+// ============================================================
+
+// ===== 0. HTML 요소 확인 =====
+// index.html이 이 script.js와 짝이 맞지 않으면(예전 버전 등) 원인을 화면에 알려줌
+const REQUIRED_IDS = [
+  "gameCanvas", "message", "goldText", "resetBtn",
+  "dialogue", "dlgName", "dlgText", "dlgNext",
+  "carveModal", "carvePanel", "carveStage", "chinShape",
+  "gaugeFill", "gaugeText", "carveDone", "carveBtn", "carveClose",
+];
+
+(function checkElements() {
+  const missing = REQUIRED_IDS.filter((id) => !document.getElementById(id));
+  if (missing.length === 0) return;
+
+  const banner = document.createElement("div");
+  banner.style.cssText =
+    "position:fixed;left:0;right:0;top:0;padding:14px;z-index:9999;" +
+    "background:#b71c1c;color:#fff;font:14px sans-serif;text-align:center;";
+  banner.textContent =
+    "index.html이 최신 버전이 아닙니다. 누락된 요소 id: " + missing.join(", ") +
+    " → index.html, style.css, script.js 3개를 모두 새 버전으로 교체해 주세요.";
+  document.body.appendChild(banner);
+  throw new Error("누락된 HTML 요소: " + missing.join(", "));
+})();
+
+// ===== 1. 기본 설정 =====
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 const messageEl = document.getElementById("message");
 const goldTextEl = document.getElementById("goldText");
+const resetBtn = document.getElementById("resetBtn");
 
 // 대화창 요소
 const dialogueEl = document.getElementById("dialogue");
@@ -21,35 +50,85 @@ const carveDoneEl = document.getElementById("carveDone");
 const carveBtn = document.getElementById("carveBtn");
 const carveClose = document.getElementById("carveClose");
 
-// ===== 저장 데이터 (localStorage) =====
+// ===== 2. 저장 데이터 (LocalStorage) =====
+// 저장 구조: { gold, isSharp, tutorialDone, rewardDone, playerPos:{x,y} }
+//  - isSharp      : 석상이 V라인으로 깎였는지
+//  - rewardDone   : 관광객 보상(+100G)을 이미 받았는지 (새로고침 시 중복 지급 방지)
+//  - playerPos    : 화면 크기에 대한 비율(0~1)이라 창 크기가 달라져도 안전함
 const SAVE_KEY = "easterChinSave";
-const defaultSave = { gold: 0, tutorialDone: false, chinDone: false, rewardDone: false };
+const DEFAULT_PLAYER_POS = { x: 0.3, y: 0.75 };
+
+function defaultSave() {
+  return {
+    gold: 0,
+    isSharp: false,
+    tutorialDone: false,
+    rewardDone: false,
+    playerPos: { ...DEFAULT_PLAYER_POS },
+  };
+}
+
+function clamp01(n) {
+  return Math.max(0, Math.min(1, n));
+}
+
+// 불러온 값이 이상해도(손상/수동 편집 등) 안전한 값만 남김
+function sanitizeSave(raw) {
+  const data = defaultSave();
+  if (!raw || typeof raw !== "object") return data;
+
+  if (Number.isFinite(raw.gold) && raw.gold >= 0) data.gold = Math.floor(raw.gold);
+  data.isSharp = raw.isSharp === true;
+  data.tutorialDone = raw.tutorialDone === true;
+  data.rewardDone = raw.rewardDone === true;
+
+  const p = raw.playerPos;
+  if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+    data.playerPos = { x: clamp01(p.x), y: clamp01(p.y) };
+  }
+  return data;
+}
 
 function loadSave() {
   try {
     const raw = localStorage.getItem(SAVE_KEY);
-    if (raw) return { ...defaultSave, ...JSON.parse(raw) };
+    if (!raw) return defaultSave();
+    return sanitizeSave(JSON.parse(raw));
   } catch (err) {
-    console.warn("저장 데이터를 불러올 수 없습니다:", err);
+    // JSON이 깨졌거나 localStorage 접근이 막힌 경우 → 초기 상태로 시작
+    console.warn("저장 데이터를 불러오지 못해 초기화합니다:", err);
+    try {
+      localStorage.removeItem(SAVE_KEY);
+    } catch (e) {
+      /* 무시 */
+    }
+    return defaultSave();
   }
-  return { ...defaultSave };
 }
 
+const save = loadSave();
+
+let ready = false;      // 초기화가 끝나기 전에는 저장하지 않음 (플레이어 위치가 아직 없으므로)
+let resetting = false;  // 리셋 중에는 저장하지 않음 (새로고침 직전 자동 저장으로 되살아나는 것 방지)
+
 function saveGame() {
+  if (!ready || resetting) return;
   try {
+    save.playerPos = {
+      x: clamp01(player.x / canvas.width),
+      y: clamp01(player.y / canvas.height),
+    };
     localStorage.setItem(SAVE_KEY, JSON.stringify(save));
   } catch (err) {
     console.warn("저장에 실패했습니다:", err);
   }
 }
 
-const save = loadSave();
-
-// ===== 게임 오브젝트 =====
+// ===== 3. 게임 오브젝트 =====
 // 주인공 (파란 타원형 도트)
 const player = { x: 0, y: 0, rx: 12, ry: 16, speed: 190 };
 
-// 낡은 오두막 (갈색 사각형) - 위치는 layout()에서 화면 크기에 맞춰 계산
+// 낡은 오두막 (갈색 사각형)
 const hut = { x: 0, y: 0, w: 150, h: 110 };
 
 // 모아이 석상 (x, y는 발밑 중심 좌표)
@@ -59,20 +138,14 @@ const moai = { x: 0, y: 0, w: 56, h: 110, interactRange: 90 };
 // mode: null(대기) | "arriving"(석상 앞으로 걸어오는 중) | "leaving"(바다 쪽으로 돌아가는 중)
 const tourist = { x: 0, y: 0, rx: 12, ry: 16, speed: 110, visible: false, mode: null };
 
-// 바다 시작 x좌표 (화면 오른쪽 약 20%가 바다)
-let seaStart = 0;
+let seaStart = 0;     // 바다 시작 x좌표 (화면 오른쪽 약 20%)
+let speckles = [];    // 모래 질감 점
+let obstacles = [];   // 충돌 사각형
+let animT = 0;        // 애니메이션용 시간(초)
 
-// 모래 질감용 점들 (크기가 바뀔 때마다 다시 생성)
-let speckles = [];
-
-// 충돌 판정용 사각형 목록
-let obstacles = [];
-
-// 애니메이션용 시간(초)
-let animT = 0;
-
-// ===== 화면 크기 / 레이아웃 =====
+// ===== 4. 화면 크기 / 레이아웃 =====
 function layout() {
+  // 캔버스를 창 크기에 맞춰 꽉 채움 (회색 여백 없음)
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
 
@@ -98,7 +171,6 @@ function layout() {
     { x: moai.x - moai.w / 2, y: moai.y - moai.h, w: moai.w, h: moai.h },
   ];
 
-  // 모래 점과 작은 돌 생성 (바다 영역 제외)
   speckles = [];
   const count = Math.floor((W * H) / 2500);
   for (let i = 0; i < count; i++) {
@@ -117,12 +189,12 @@ function clampPlayer() {
   player.y = Math.max(player.ry, Math.min(canvas.height - player.ry, player.y));
 }
 
-// 플레이어가 갈 수 있는 가장 오른쪽 x (파도가 닿는 해안선 앞까지)
+// 플레이어가 갈 수 있는 가장 오른쪽 x (해안선 앞까지)
 function maxPlayerX() {
   return seaStart - 20 - player.rx;
 }
 
-// ===== 메시지 / 골드 UI =====
+// ===== 5. 메시지 / 골드 UI =====
 let messageUntil = 0; // 0이면 석상에서 멀어질 때 사라지는 메시지
 
 function showMessage(text, ms = 0) {
@@ -140,7 +212,7 @@ function updateGoldUI(bump = false) {
   }
 }
 
-// ===== 키보드 입력 =====
+// ===== 6. 키보드 입력 =====
 // e.code는 물리적 키 위치라서 한글 입력 상태에서도 WASD가 동작합니다.
 const keys = {};
 
@@ -165,8 +237,8 @@ window.addEventListener("keydown", (e) => {
 
   // 자유 이동 모드: 모아이 근처에서 E 키
   if (e.code === "KeyE" && isNearMoai()) {
-    if (save.chinDone) {
-      showMessage("이미 완벽한 V라인이다!", 2000);
+    if (save.isSharp) {
+      showMessage("이미 날렵한 V라인이다!", 2000);
     } else {
       openCarve();
     }
@@ -177,12 +249,17 @@ window.addEventListener("keyup", (e) => {
   keys[e.code] = false;
 });
 
+// 창 포커스를 잃으면 눌린 키 상태 초기화 (캐릭터가 계속 걷는 현상 방지)
+window.addEventListener("blur", () => {
+  for (const k in keys) keys[k] = false;
+});
+
 // 클릭으로도 대화 진행
 window.addEventListener("mousedown", () => {
   if (dialogueActive) advanceDialogue();
 });
 
-// ===== 대화 시스템 =====
+// ===== 7. 대화 시스템 =====
 const tutorialScript = [
   { speaker: "주인공", text: "할아버지… 세상에 날 혼자 두고 가시면 어떡해요…." },
   { speaker: "주인공", text: "부모님도 없고, 일자리도 없고… 가진 거라곤 할아버지가 남겨주신 이스터 섬의 땅 한 평뿐이라니." },
@@ -275,22 +352,22 @@ function endDialogue() {
 // 튜토리얼 대화가 끝났을 때
 function onTutorialEnd() {
   save.tutorialDone = true;
-  saveGame();
   tourist.visible = false; // 관광객은 잠시 자리를 비움 (턱을 깎으면 다시 등장)
+  saveGame();
 }
 
 // 보상 대화가 끝났을 때: +100 골드
 function onRewardEnd() {
   save.rewardDone = true;
   save.gold += 100;
-  saveGame();
   updateGoldUI(true);
   showMessage("+100 Gold!", 2500);
+  saveGame();
 
   tourist.mode = "leaving"; // 관광객은 바다 쪽으로 돌아감
 }
 
-// ===== 턱 깎기 미니게임 =====
+// ===== 8. 턱 깎기 미니게임 =====
 let carveActive = false;     // 팝업이 열려 있는지
 let carveFinishing = false;  // 100% 도달 후 닫히는 중인지
 let carveProgress = 0;       // V라인 완성도 (0~100)
@@ -301,6 +378,7 @@ function openCarve() {
   carveDoneEl.classList.add("hidden");
   carveModal.classList.remove("hidden");
   messageEl.textContent = "";
+  messageUntil = 0;
   renderCarve();
 }
 
@@ -315,11 +393,11 @@ function renderCarve() {
   gaugeText.textContent = carveProgress + "%";
 
   const p = carveProgress / 100;
-  const cx = 120;                  // 석상 중심 x
-  const topY = 138;                // 턱이 시작되는 y
-  const wTop = 56;                 // 턱 윗부분 반너비
-  const wBot = 52 * (1 - p) + 5 * p;     // 아랫부분 반너비: 넓음 → 뾰족
-  const botY = 205 + 35 * p;             // 턱 끝: 점점 길어짐
+  const cx = 120;                      // 석상 중심 x
+  const topY = 138;                    // 턱이 시작되는 y
+  const wTop = 56;                     // 턱 윗부분 반너비
+  const wBot = 52 * (1 - p) + 5 * p;   // 아랫부분 반너비: 넓음 → 뾰족
+  const botY = 205 + 35 * p;           // 턱 끝: 점점 길어짐
 
   chinEl.setAttribute(
     "points",
@@ -327,7 +405,7 @@ function renderCarve() {
   );
 }
 
-// 타격 시 튀는 돌 조각 생성
+// 타격 시 튀는 돌 조각
 function spawnChips(clientX, clientY) {
   const rect = carveStage.getBoundingClientRect();
   const x = clientX - rect.left;
@@ -338,24 +416,28 @@ function spawnChips(clientX, clientY) {
     chip.className = "chip";
     chip.style.left = x + "px";
     chip.style.top = y + "px";
-    chip.style.setProperty("--dx", (Math.random() * 90 - 45) + "px");
-    chip.style.setProperty("--dy", (Math.random() * 70 - 35) + "px");
+    chip.style.setProperty("--dx", Math.random() * 90 - 45 + "px");
+    chip.style.setProperty("--dy", Math.random() * 70 - 35 + "px");
     carveStage.appendChild(chip);
     setTimeout(() => chip.remove(), 550);
   }
 }
 
-function shakePanel() {
-  carvePanel.classList.remove("shake");
-  void carvePanel.offsetWidth; // 애니메이션 재시작
-  carvePanel.classList.add("shake");
+// 팝업 + 화면 전체 흔들림
+function shakeAll() {
+  [carvePanel, canvas].forEach((el) => {
+    const cls = el === canvas ? "shake-screen" : "shake";
+    el.classList.remove(cls);
+    void el.offsetWidth; // 애니메이션 재시작
+    el.classList.add(cls);
+  });
 }
 
 // 망치질 한 번
 function hitChin(clientX, clientY) {
   if (carveFinishing) return;
 
-  // 클릭 위치가 없으면(버튼으로 친 경우) 턱 중앙에서 조각이 튐
+  // 위치가 없으면(버튼으로 친 경우) 턱 중앙에서 조각이 튐
   if (clientX === undefined) {
     const r = chinEl.getBoundingClientRect();
     clientX = r.left + r.width / 2;
@@ -363,7 +445,7 @@ function hitChin(clientX, clientY) {
   }
 
   carveProgress = Math.min(100, carveProgress + 7 + Math.floor(Math.random() * 4));
-  shakePanel();
+  shakeAll();
   spawnChips(clientX, clientY);
   renderCarve();
 
@@ -372,12 +454,13 @@ function hitChin(clientX, clientY) {
 
 function finishCarve() {
   carveFinishing = true;
-  carveDoneEl.classList.remove("hidden"); // "완벽한 V라인 완성!"
+  carveDoneEl.classList.remove("hidden"); // "날렵한 V라인 완성!"
 
   setTimeout(() => {
     closeCarve();
-    save.chinDone = true; // 이제부터 맵의 석상이 V라인으로 그려짐
+    save.isSharp = true; // 이제부터 맵의 석상이 V라인으로 그려짐
     saveGame();
+    showMessage("날렵한 V라인 완성!", 2500);
 
     // 잠시 후 관광객이 등장
     setTimeout(startTouristVisit, 1500);
@@ -394,9 +477,10 @@ carveClose.addEventListener("click", () => {
   if (!carveFinishing) closeCarve();
 });
 
-// ===== 관광객 보상 스토리 =====
+// ===== 9. 관광객 보상 스토리 =====
 // 맵 오른쪽(바다 쪽)에서 등장해 석상 앞까지 걸어옴
 function startTouristVisit() {
+  if (save.rewardDone) return;
   tourist.x = seaStart - 30;
   tourist.y = moai.y + 14;
   tourist.visible = true;
@@ -432,7 +516,7 @@ function updateTourist(dt) {
   }
 }
 
-// ===== 유틸 함수 =====
+// ===== 10. 유틸 함수 =====
 function isNearMoai() {
   const dx = player.x - moai.x;
   const dy = player.y - (moai.y - moai.h / 2);
@@ -457,7 +541,7 @@ function shoreX(y, t) {
   return seaStart + Math.sin(y * 0.02 + t * 2) * 8 + Math.sin(y * 0.05 - t * 1.3) * 4;
 }
 
-// ===== 업데이트 =====
+// ===== 11. 업데이트 =====
 function update(dt) {
   // 시간이 지난 메시지 지우기
   if (messageUntil && performance.now() > messageUntil) {
@@ -489,13 +573,13 @@ function update(dt) {
   const nextY = player.y + dy * player.speed * dt;
   if (!collides(player.x, nextY)) player.y = nextY;
 
-  // 맵 경계(화면 + 바다 앞 해안선) 밖으로 나가지 않게 제한
+  // 맵 경계(화면 + 해안선) 밖으로 나가지 않게 제한
   clampPlayer();
 
   if (!isNearMoai() && !messageUntil) messageEl.textContent = "";
 }
 
-// ===== 그리기 =====
+// ===== 12. 그리기 =====
 function drawGround() {
   const W = canvas.width;
   const H = canvas.height;
@@ -722,7 +806,7 @@ function draw(t) {
 
   // y(발밑) 기준으로 정렬해서 아래쪽에 있는 것이 위에 그려지게 함
   const list = [
-    { y: moai.y, fn: save.chinDone ? drawMoaiV : drawMoai },
+    { y: moai.y, fn: save.isSharp ? drawMoaiV : drawMoai },
     { y: player.y + player.ry, fn: drawPlayer },
   ];
   if (tourist.visible) list.push({ y: tourist.y + tourist.ry, fn: drawTourist });
@@ -730,10 +814,10 @@ function draw(t) {
   list.forEach((o) => o.fn());
 
   // 아직 턱을 깎지 않았고 자유 이동 중일 때만 안내 표시
-  if (!dialogueActive && !carveActive && !save.chinDone && isNearMoai()) drawPrompt();
+  if (!dialogueActive && !carveActive && !save.isSharp && isNearMoai()) drawPrompt();
 }
 
-// ===== 게임 루프 =====
+// ===== 13. 게임 루프 =====
 let lastTime = performance.now();
 
 function loop(now) {
@@ -745,40 +829,55 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
-// ===== 로컬 스토리지 초기화 버튼 =====
-const resetBtn = document.getElementById("resetBtn");
-
+// ===== 14. 리셋 버튼 =====
 // 버튼을 눌러도 대화가 넘어가지 않도록 클릭 전파를 막음
 resetBtn.addEventListener("mousedown", (e) => e.stopPropagation());
 
 resetBtn.addEventListener("click", () => {
-  resetBtn.blur(); // 버튼에 포커스가 남아 Space/Enter로 다시 눌리는 것 방지
+  resetBtn.blur(); // 포커스가 남아 Space/Enter로 다시 눌리는 것 방지
 
   if (!confirm("저장된 데이터를 모두 삭제하고 처음부터 다시 시작할까요?")) return;
 
+  resetting = true; // 새로고침 직전의 자동 저장이 데이터를 되살리지 못하게 막음
   try {
-    localStorage.clear(); // 이 사이트(origin)에 저장된 모든 데이터 삭제
+    localStorage.removeItem(SAVE_KEY); // 이 게임의 저장 데이터만 삭제
   } catch (err) {
-    console.warn("로컬 스토리지에 접근할 수 없습니다:", err);
+    console.warn("저장 데이터를 삭제하지 못했습니다:", err);
   }
-  location.reload(); // 튜토리얼부터 다시 시작
+  location.reload(); // 초기 상태(튜토리얼)부터 다시 시작
 });
 
-// ===== 시작 =====
+// ===== 15. 자동 저장 =====
+// 위치는 계속 바뀌므로 주기적으로 + 탭을 닫거나 숨길 때 저장
+setInterval(saveGame, 3000);
+window.addEventListener("beforeunload", saveGame);
+window.addEventListener("pagehide", saveGame);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") saveGame();
+});
+
+// ===== 16. 시작 =====
 window.addEventListener("resize", layout);
 layout();
 updateGoldUI();
 
-// 주인공 시작 위치 (오두막 앞쪽)
-player.x = canvas.width * 0.3;
-player.y = canvas.height * 0.75;
+// 저장된 위치(비율)를 복원. 장애물 안에 끼는 위치면 기본 위치로 대체
+player.x = save.playerPos.x * canvas.width;
+player.y = save.playerPos.y * canvas.height;
 clampPlayer();
+if (collides(player.x, player.y)) {
+  player.x = DEFAULT_PLAYER_POS.x * canvas.width;
+  player.y = DEFAULT_PLAYER_POS.y * canvas.height;
+  clampPlayer();
+}
+
+ready = true;
 
 if (!save.tutorialDone) {
   // 처음 시작: 튜토리얼 대화
   startDialogue(tutorialScript, onTutorialEnd);
-} else if (save.chinDone && !save.rewardDone) {
-  // 턱은 깎았지만 보상을 아직 못 받고 새로고침한 경우
+} else if (save.isSharp && !save.rewardDone) {
+  // 턱은 깎았지만 보상을 받기 전에 새로고침한 경우: 관광객 다시 등장
   setTimeout(startTouristVisit, 1000);
 }
 

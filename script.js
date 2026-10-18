@@ -440,6 +440,25 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
+// ===== 로컬 스토리지 초기화 버튼 =====
+const resetBtn = document.getElementById("resetBtn");
+
+// 버튼을 눌러도 대화가 넘어가지 않도록 클릭 전파를 막음
+resetBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+
+resetBtn.addEventListener("click", () => {
+  resetBtn.blur(); // 버튼에 포커스가 남아 Space/Enter로 다시 눌리는 것 방지
+
+  if (!confirm("저장된 데이터를 모두 삭제하고 처음부터 다시 시작할까요?")) return;
+
+  try {
+    localStorage.clear(); // 이 사이트(origin)에 저장된 모든 데이터 삭제
+  } catch (err) {
+    console.warn("로컬 스토리지에 접근할 수 없습니다:", err);
+  }
+  location.reload(); // 튜토리얼부터 다시 시작
+});
+
 // ===== 시작 =====
 window.addEventListener("resize", layout);
 layout();

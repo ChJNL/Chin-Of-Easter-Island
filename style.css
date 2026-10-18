@@ -35,6 +35,25 @@ body {
   pointer-events: none;
 }
 
+/* ===== 초기화 버튼 ===== */
+.reset-btn {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  padding: 6px 12px;
+  font-family: inherit;
+  font-size: 13px;
+  color: #fff;
+  background: rgba(120, 20, 20, 0.85);
+  border: 2px solid #fff;
+  cursor: pointer;
+  z-index: 10;
+}
+
+.reset-btn:hover {
+  background: rgba(190, 30, 30, 0.95);
+}
+
 .message {
   position: fixed;
   top: 12px;

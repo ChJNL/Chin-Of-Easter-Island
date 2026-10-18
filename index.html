@@ -4,15 +4,27 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>이스터 섬의 턱</title>
+  <!-- 한글 도트(픽셀) 폰트: 불러오지 못하면 style.css의 대체 폰트가 사용됩니다 -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/galmuri@latest/dist/galmuri.css">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <main class="game-wrap">
-    <h1>이스터 섬의 턱</h1>
-    <canvas id="gameCanvas" width="800" height="600"></canvas>
-    <p class="help">이동: 방향키 또는 W A S D &nbsp;|&nbsp; 상호작용: E</p>
-    <p id="message" class="message"></p>
-  </main>
+  <!-- 화면 전체를 채우는 게임 캔버스 (크기는 script.js에서 창 크기에 맞춤) -->
+  <canvas id="gameCanvas"></canvas>
+
+  <!-- 상단 조작 안내 -->
+  <div class="hud">이동: 방향키 / WASD &nbsp;|&nbsp; 상호작용: E</div>
+
+  <!-- 상호작용 결과 메시지 -->
+  <div id="message" class="message"></div>
+
+  <!-- 하단 대화창 (Dialogue UI) -->
+  <div id="dialogue" class="dialogue hidden">
+    <div id="dlgName" class="dlg-name"></div>
+    <p id="dlgText" class="dlg-text"></p>
+    <span id="dlgNext" class="dlg-next">▼</span>
+    <div class="dlg-hint">클릭 또는 Enter</div>
+  </div>
 
   <script src="script.js"></script>
 </body>

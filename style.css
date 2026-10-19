@@ -1,268 +1,516 @@
-/* =========================================================
-   이스터 섬의 턱 - style.css
-   ========================================================= */
-:root {
-  --bg: #1d140c;
-  --panel: #2c1f14;
-  --panel-2: #3b2a1b;
-  --sand: #ead7a1;
-  --accent: #ffb23f;
-  --accent-2: #ff7a3d;
-  --ok: #7ee08a;
-  --warn: #ffd166;
-  --error: #ff6b6b;
-  --text: #fff4de;
-  --muted: #c9b48f;
-  --radius: 14px;
-}
-
-* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-
-html, body {
+* {
+  box-sizing: border-box;
   margin: 0;
   padding: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family: "Pretendard", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
-  overscroll-behavior: none;
 }
 
-body { min-height: 100vh; user-select: none; -webkit-user-select: none; }
-
-.hidden { display: none !important; }
-
-#app {
-  max-width: 880px;
-  margin: 0 auto;
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-/* ---------- HUD ---------- */
-#hud {
-  background: var(--panel);
-  border: 2px solid #5a3f27;
-  border-radius: var(--radius);
-  padding: 10px 12px;
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 8px 12px;
-  align-items: center;
-}
-#hud h1 { margin: 0; font-size: 1.15rem; color: var(--accent); }
-.stats { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; order: 3; }
-.stat {
-  background: var(--panel-2);
-  border-radius: 999px;
-  padding: 4px 10px;
-  font-size: 0.85rem;
-  white-space: nowrap;
-}
-#stat-gold { color: var(--accent); font-weight: 700; }
-#stat-buff { color: var(--ok); }
-.hud-buttons { display: flex; gap: 6px; }
-
-button {
-  font-family: inherit;
-  cursor: pointer;
-  border: none;
-  border-radius: 10px;
-  padding: 8px 12px;
-  background: var(--accent);
-  color: #2a1a08;
-  font-weight: 700;
-  font-size: 0.9rem;
-  transition: transform 0.08s ease, filter 0.15s ease;
-}
-button:hover { filter: brightness(1.08); }
-button:active { transform: scale(0.96); }
-button:disabled { opacity: 0.5; cursor: not-allowed; filter: grayscale(0.4); }
-button.danger { background: #8e3b2f; color: #fff; }
-button.ghost { background: var(--panel-2); color: var(--text); }
-
-/* ---------- 게임 화면 ---------- */
-#stage { position: relative; }
-#game {
-  display: block;
+html,
+body {
   width: 100%;
-  height: auto;
-  aspect-ratio: 800 / 480;
-  background: #000;
-  border: 3px solid #5a3f27;
-  border-radius: var(--radius);
-  touch-action: none;
-  image-rendering: auto;
+  height: 100%;
+  overflow: hidden;            /* 스크롤바/여백 방지 */
+  background: #e2c98f;         /* 캔버스 뒤 배경도 모래색으로 통일 */
+  font-family: "Galmuri11", "DotGothic16", "Malgun Gothic", "Apple SD Gothic Neo", monospace;
 }
-.toast {
-  position: absolute;
-  left: 50%;
-  bottom: 14px;
-  transform: translateX(-50%);
-  max-width: 92%;
-  background: rgba(20, 12, 5, 0.9);
-  border: 2px solid var(--accent);
-  color: var(--text);
-  padding: 8px 14px;
-  border-radius: 999px;
-  font-size: 0.9rem;
-  text-align: center;
+
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* 캔버스를 화면 전체에 꽉 채움 */
+#gameCanvas {
+  position: fixed;
+  inset: 0;
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  touch-action: none;
+}
+
+/* 타격 시 화면 전체가 살짝 떨림 (가장자리가 비지 않도록 약간 확대) */
+#gameCanvas.shake-screen {
+  animation: screenShake 0.25s linear;
+}
+
+@keyframes screenShake {
+  0%   { transform: translate(0, 0) scale(1.01); }
+  25%  { transform: translate(-4px, 2px) scale(1.01); }
+  50%  { transform: translate(4px, -2px) scale(1.01); }
+  75%  { transform: translate(-2px, -2px) scale(1.01); }
+  100% { transform: translate(0, 0) scale(1); }
+}
+
+/* ===== HUD / 메시지 ===== */
+.hud {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  padding: 6px 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.5);
+  border: 2px solid #fff;
   pointer-events: none;
-  animation: toastIn 0.2s ease;
 }
-@keyframes toastIn { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
-/* ---------- 터치 조작부 (모바일/터치 기기에서만 표시) ---------- */
-#controls {
+.hud .area {
+  color: #9fd8ff;
+}
+
+.hud .gold {
+  color: #ffd54a;
+  font-size: 15px;
+}
+
+/* 골드가 오를 때 살짝 튀는 효과 */
+.hud .gold.bump {
+  animation: goldBump 0.6s ease-out;
+}
+
+@keyframes goldBump {
+  0%   { transform: scale(1); }
+  30%  { transform: scale(1.25); color: #fff; }
+  100% { transform: scale(1); }
+}
+
+/* ===== 리셋 버튼 (상단 우측) ===== */
+.reset-btn {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  padding: 6px 16px;
+  font-family: inherit;
+  font-size: 13px;
+  color: #fff;
+  background: rgba(120, 20, 20, 0.85);
+  border: 2px solid #fff;
+  cursor: pointer;
+  z-index: 10;
+}
+
+.reset-btn:hover {
+  background: rgba(190, 30, 30, 0.95);
+}
+
+.touch-controls {
   display: none;
-  justify-content: space-between;
-  align-items: center;
-  padding: 4px 10px 10px;
-  touch-action: none;
-}
-.dpad {
-  display: grid;
-  grid-template-columns: repeat(3, 62px);
-  grid-template-rows: repeat(3, 62px);
-  gap: 6px;
-}
-.dp {
-  background: var(--panel-2);
-  color: var(--text);
-  font-size: 1.4rem;
-  padding: 0;
-  border: 2px solid #5a3f27;
-  touch-action: none;
-}
-.dp.up { grid-column: 2; grid-row: 1; }
-.dp.left { grid-column: 1; grid-row: 2; }
-.dp.right { grid-column: 3; grid-row: 2; }
-.dp.down { grid-column: 2; grid-row: 3; }
-.dp.active { background: var(--accent); color: #2a1a08; }
-
-#btn-interact {
-  width: 104px;
-  height: 104px;
-  border-radius: 50%;
-  font-size: 2rem;
-  line-height: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-  background: var(--panel-2);
-  color: var(--muted);
-  border: 3px solid #5a3f27;
-  touch-action: none;
-}
-#btn-interact small { font-size: 0.7rem; font-weight: 600; }
-#btn-interact.ready {
-  background: var(--accent);
-  color: #2a1a08;
-  border-color: #fff2c4;
-  animation: pulse 1s ease-in-out infinite;
-}
-@keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 178, 63, 0.6); } 50% { box-shadow: 0 0 0 12px rgba(255, 178, 63, 0); } }
-
-#help { margin: 0; text-align: center; color: var(--muted); font-size: 0.8rem; }
-
-@media (hover: none), (pointer: coarse), (max-width: 820px) {
-  #controls { display: flex; }
-  #help { display: none; }
 }
 
-@media (max-width: 520px) {
-  #app { padding: 6px; gap: 6px; }
-  #hud h1 { font-size: 1rem; }
-  .stat { font-size: 0.78rem; padding: 3px 8px; }
-  .dpad { grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(3, 56px); }
-  #btn-interact { width: 92px; height: 92px; }
+.message {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 60vw;
+  padding: 8px 16px;
+  font-size: 14px;
+  color: #ffd54a;
+  background: rgba(10, 10, 20, 0.85);
+  border: 2px solid #ffd54a;
+  pointer-events: none;
+  z-index: 30;
 }
 
-/* ---------- 모달 ---------- */
+.message:empty {
+  display: none;
+}
+
+/* ===== 하단 대화창 ===== */
+.dialogue {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  width: min(900px, 92vw);
+  min-height: 140px;
+  padding: 18px 24px 30px;
+  background: rgba(10, 10, 25, 0.88);   /* 어두운 반투명 */
+  border: 4px solid #fff;                /* 흰색 테두리 */
+  box-shadow: 0 0 0 4px #000, 6px 6px 0 6px rgba(0, 0, 0, 0.5); /* 도트 느낌 이중 테두리 */
+  color: #fff;
+  cursor: pointer;
+  user-select: none;
+  image-rendering: pixelated;
+}
+
+.dialogue.hidden {
+  display: none;
+}
+
+.dlg-name {
+  position: absolute;
+  top: -22px;
+  left: 16px;
+  padding: 3px 14px;
+  font-size: 15px;
+  color: #000;
+  background: #ffd54a;
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 3px #000;
+}
+
+.dlg-text {
+  margin-top: 8px;
+  font-size: 19px;
+  line-height: 1.7;
+  word-break: keep-all;
+  white-space: pre-wrap;
+}
+
+/* 다음 대화 표시 (깜빡이는 화살표) */
+.dlg-next {
+  position: absolute;
+  right: 20px;
+  bottom: 10px;
+  font-size: 16px;
+  color: #ffd54a;
+  animation: blink 0.9s steps(1) infinite;
+}
+
+.dlg-hint {
+  position: absolute;
+  left: 24px;
+  bottom: 8px;
+  font-size: 11px;
+  color: #9aa0b5;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ===== 턱 깎기 모달 ===== */
 .modal {
   position: fixed;
   inset: 0;
-  z-index: 50;
-  background: rgba(10, 6, 2, 0.72);
+  z-index: 20;
   display: flex;
-  align-items: center;
   justify-content: center;
-  padding: 12px;
-}
-.modal-box {
-  position: relative;
-  width: 100%;
-  max-width: 480px;
-  max-height: 88vh;
-  overflow-y: auto;
-  background: var(--panel);
-  border: 3px solid var(--accent);
-  border-radius: 18px;
-  padding: 18px 16px 16px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
-  animation: pop 0.18s ease;
-}
-@keyframes pop { from { transform: scale(0.94); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-.modal-box h2 { margin: 0 34px 10px 0; font-size: 1.15rem; color: var(--accent); }
-.modal-x { position: absolute; top: 10px; right: 10px; width: 34px; height: 34px; padding: 0; background: var(--panel-2); color: var(--text); }
-.modal-desc { margin: 0 0 10px; color: var(--muted); font-size: 0.9rem; line-height: 1.5; }
-.gold-line { background: var(--panel-2); border-radius: 10px; padding: 6px 10px; margin-bottom: 10px; font-weight: 700; color: var(--accent); }
-
-.modal-msg { min-height: 1.3em; margin: 10px 0 0; font-size: 0.9rem; font-weight: 600; text-align: center; }
-.modal-msg.ok { color: var(--ok); }
-.modal-msg.warn { color: var(--warn); }
-.modal-msg.error { color: var(--error); }
-.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
-
-/* 상품 / 서비스 카드 */
-.card {
-  display: grid;
-  grid-template-columns: 52px 1fr auto;
-  gap: 10px;
   align-items: center;
-  background: var(--panel-2);
-  border: 2px solid #5a3f27;
-  border-radius: 12px;
-  padding: 10px;
-  margin-bottom: 8px;
-}
-.card.owned { border-color: #4f8f58; }
-.card.locked { opacity: 0.6; }
-.card-icon { font-size: 2rem; text-align: center; }
-.card-name { font-weight: 800; }
-.card-desc { font-size: 0.82rem; color: var(--muted); margin-top: 2px; line-height: 1.4; }
-.card-price { font-size: 0.82rem; color: var(--accent); font-weight: 700; margin-top: 3px; }
-.badge { display: inline-block; font-size: 0.75rem; padding: 3px 8px; border-radius: 999px; background: #2f5f37; color: #d6ffd9; font-weight: 700; }
-
-@media (max-width: 420px) {
-  .card { grid-template-columns: 40px 1fr; }
-  .card > button, .card > .badge { grid-column: 1 / -1; justify-self: stretch; text-align: center; }
+  background: rgba(0, 0, 0, 0.65);
 }
 
-/* 턱 깎기 */
-.carve-stage { display: flex; justify-content: center; margin: 4px 0 10px; }
-.carve-icon { position: relative; font-size: 5.2rem; line-height: 1; width: 110px; text-align: center; }
-.carve-icon.hit { animation: hit 0.18s ease; }
-@keyframes hit { 0% { transform: translateX(0) rotate(0); } 25% { transform: translateX(-5px) rotate(-3deg); } 60% { transform: translateX(5px) rotate(3deg); } 100% { transform: translateX(0) rotate(0); } }
-.carve-icon .glasses { position: absolute; left: 50%; top: 22%; transform: translateX(-50%); font-size: 2.6rem; }
-.carve-icon .chin2 { position: absolute; left: 50%; bottom: -4px; transform: translateX(-50%); width: 56px; height: 20px; border-radius: 50%; background: #8d8d86; z-index: -1; }
-.gauge { position: relative; height: 26px; background: #140d07; border: 2px solid #5a3f27; border-radius: 999px; overflow: hidden; }
-.gauge-fill { height: 100%; width: 0; background: linear-gradient(90deg, #ff9d2e, #ffd44f); transition: width 0.1s ease; }
-.gauge-text { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: 800; color: #fff; text-shadow: 0 1px 2px #000; }
-.carve-info { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; margin: 8px 0 10px; font-size: 0.85rem; color: var(--muted); }
-.carve-btn { width: 100%; padding: 16px; font-size: 1.2rem; background: linear-gradient(180deg, #ffc15a, #ff8f2e); touch-action: manipulation; }
+.modal.hidden {
+  display: none;
+}
 
-/* 대화 / 스토리 */
-.dialogue { display: grid; grid-template-columns: 56px 1fr; gap: 10px; align-items: start; }
-.dialogue-face { font-size: 2.6rem; text-align: center; }
-.dialogue-text { background: var(--panel-2); border-radius: 12px; padding: 12px; line-height: 1.6; min-height: 90px; }
-.dialogue-page { text-align: right; font-size: 0.75rem; color: var(--muted); margin-top: 4px; }
+.carve-panel {
+  position: relative;
+  width: min(520px, 94vw);
+  max-height: 96vh;
+  padding: 22px 24px 20px;
+  color: #fff;
+  text-align: center;
+  background: rgba(10, 10, 25, 0.95);
+  border: 4px solid #fff;
+  box-shadow: 0 0 0 4px #000, 6px 6px 0 6px rgba(0, 0, 0, 0.5);
+  user-select: none;
+}
 
-.story p { opacity: 0; animation: fadeUp 0.7s ease forwards; line-height: 1.7; margin: 0 0 10px; }
-.story p.quote { font-style: italic; color: var(--warn); border-left: 3px solid var(--accent); padding-left: 10px; }
-@keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+/* 타격 시 팝업이 바르르 흔들리는 애니메이션 */
+.carve-panel.shake {
+  animation: panelShake 0.25s linear;
+}
 
-.zone-note { font-size: 0.8rem; color: var(--muted); margin: 0 0 10px; }
+@keyframes panelShake {
+  0%   { transform: translate(0, 0); }
+  20%  { transform: translate(-7px, 3px); }
+  40%  { transform: translate(7px, -3px); }
+  60%  { transform: translate(-4px, -2px); }
+  80%  { transform: translate(4px, 2px); }
+  100% { transform: translate(0, 0); }
+}
+
+.carve-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  font-family: inherit;
+  font-size: 14px;
+  color: #fff;
+  background: transparent;
+  border: 2px solid #fff;
+  cursor: pointer;
+}
+
+.carve-close:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* 게이지 */
+.gauge-head {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 36px 6px 0;
+  font-size: 15px;
+  color: #ffd54a;
+}
+
+.gauge {
+  height: 26px;
+  background: #222;
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 3px #000;
+  overflow: hidden;
+}
+
+.gauge-fill {
+  width: 0%;
+  height: 100%;
+  background: repeating-linear-gradient(
+    90deg,
+    #ffd54a 0 10px,
+    #ffb300 10px 20px
+  );
+  transition: width 0.15s ease-out;
+}
+
+/* 석상 영역 */
+.carve-stage {
+  position: relative;
+  margin: 14px 0 8px;
+}
+
+#carveSvg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 40vh;
+}
+
+/* 클릭할 턱: 망치 커서 + 깜빡이는 점선 */
+.chin {
+  cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><text y='26' font-size='26'>🔨</text></svg>") 4 28, pointer;
+  animation: chinPulse 1s ease-in-out infinite;
+}
+
+@keyframes chinPulse {
+  50% {
+    stroke-opacity: 0.3;
+  }
+}
+
+/* 튀는 돌 조각 */
+.chip {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: #b0b0b0;
+  border: 1px solid #444;
+  pointer-events: none;
+  animation: chipFly 0.5s ease-out forwards;
+}
+
+@keyframes chipFly {
+  to {
+    transform: translate(var(--dx), var(--dy)) rotate(200deg);
+    opacity: 0;
+  }
+}
+
+/* 완성 알림 */
+.carve-done {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 90%;
+  padding: 14px 8px;
+  font-size: 24px;
+  color: #ffd54a;
+  background: rgba(0, 0, 0, 0.82);
+  border: 3px solid #ffd54a;
+  animation: donePop 0.4s ease-out;
+}
+
+.carve-done.hidden {
+  display: none;
+}
+
+@keyframes donePop {
+  from { transform: translate(-50%, -50%) scale(0.5); opacity: 0; }
+  to   { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+}
+
+.carve-guide {
+  margin-bottom: 12px;
+  font-size: 14px;
+  color: #cfd3e6;
+}
+
+.carve-btn {
+  padding: 10px 22px;
+  font-family: inherit;
+  font-size: 16px;
+  color: #000;
+  background: #ffd54a;
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 3px #000;
+  cursor: pointer;
+}
+
+.carve-btn:active {
+  transform: translateY(2px);
+}
+
+@media (pointer: coarse), (max-width: 700px) {
+  .touch-controls {
+    position: fixed;
+    right: max(16px, env(safe-area-inset-right));
+    bottom: max(16px, env(safe-area-inset-bottom));
+    left: max(16px, env(safe-area-inset-left));
+    z-index: 10;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    pointer-events: none;
+  }
+
+  body.dialogue-open .touch-controls,
+  body.carve-open .touch-controls {
+    display: none;
+  }
+
+  .touch-pad {
+    display: grid;
+    grid-template-columns: repeat(3, 44px);
+    grid-template-rows: repeat(3, 44px);
+    gap: 4px;
+    pointer-events: auto;
+  }
+
+  .touch-pad button,
+  .touch-interact {
+    display: grid;
+    place-items: center;
+    color: #fff;
+    background: rgba(10, 10, 25, 0.82);
+    border: 2px solid #fff;
+    box-shadow: 0 0 0 2px #000;
+    font: inherit;
+    font-size: 20px;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .touch-pad button:active,
+  .touch-pad button.is-pressed,
+  .touch-interact:active {
+    color: #000;
+    background: #ffd54a;
+  }
+
+  .touch-pad [data-key="ArrowUp"] {
+    grid-area: 1 / 2;
+  }
+
+  .touch-pad [data-key="ArrowLeft"] {
+    grid-area: 2 / 1;
+  }
+
+  .touch-pad [data-key="ArrowRight"] {
+    grid-area: 2 / 3;
+  }
+
+  .touch-pad [data-key="ArrowDown"] {
+    grid-area: 3 / 2;
+  }
+
+  .touch-interact {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    pointer-events: auto;
+    font-size: 18px;
+  }
+
+  .hud {
+    top: max(8px, env(safe-area-inset-top));
+    left: max(8px, env(safe-area-inset-left));
+    max-width: calc(100vw - 100px);
+    padding: 5px 8px;
+    font-size: 11px;
+  }
+
+  .hud .gold {
+    font-size: 13px;
+  }
+
+  .reset-btn {
+    top: max(8px, env(safe-area-inset-top));
+    right: max(8px, env(safe-area-inset-right));
+    padding: 6px 10px;
+  }
+
+  .message {
+    top: max(76px, calc(env(safe-area-inset-top) + 68px));
+    max-width: calc(100vw - 24px);
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+
+  .dialogue {
+    bottom: max(12px, env(safe-area-inset-bottom));
+    width: calc(100vw - 32px);
+    min-height: 120px;
+    padding: 16px 14px 30px;
+  }
+
+  .dlg-text {
+    font-size: 16px;
+  }
+
+  .carve-panel {
+    width: calc(100vw - 24px);
+    max-height: 94vh;
+    max-height: 94dvh;
+    overflow-y: auto;
+    padding: 18px 16px 16px;
+  }
+
+  #carveSvg {
+    max-height: 34vh;
+    max-height: 34dvh;
+  }
+
+  .carve-done {
+    font-size: 19px;
+  }
+}
+
+@media (max-height: 480px) and (pointer: coarse) {
+  .touch-controls {
+    bottom: max(8px, env(safe-area-inset-bottom));
+  }
+
+  .touch-pad {
+    grid-template-columns: repeat(3, 36px);
+    grid-template-rows: repeat(3, 36px);
+    gap: 3px;
+  }
+
+  .touch-interact {
+    width: 54px;
+    height: 54px;
+  }
+
+  .carve-panel {
+    padding: 12px 14px;
+  }
+
+  .carve-stage {
+    margin: 8px 0 5px;
+  }
+
+  #carveSvg {
+    max-height: 28dvh;
+  }
+}

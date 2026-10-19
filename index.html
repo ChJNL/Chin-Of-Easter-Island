@@ -2,85 +2,55 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>이스터 섬의 턱</title>
-  <!-- 한글 도트(픽셀) 폰트: 불러오지 못하면 style.css의 대체 폰트가 사용됩니다 -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/galmuri@latest/dist/galmuri.css">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <!-- 화면 전체를 채우는 게임 캔버스 (크기는 script.js에서 창 크기에 맞춤) -->
-  <canvas id="gameCanvas"></canvas>
+  <div id="app">
+    <header id="hud">
+      <h1>🗿 이스터 섬의 턱</h1>
+      <div class="stats">
+        <span class="stat" id="stat-gold">💰 0 G</span>
+        <span class="stat" id="stat-tools">🧰 도구 없음</span>
+        <span class="stat hidden" id="stat-buff">📣 전단지</span>
+        <span class="stat" id="stat-map">📍 원주민 마을</span>
+      </div>
+      <div class="hud-buttons">
+        <button id="btn-save" type="button">💾 저장</button>
+        <button id="btn-reset" type="button" class="danger">🗑 초기화</button>
+      </div>
+    </header>
 
-  <!-- 상단 좌측 HUD: 조작 안내 + 현재 위치 + 보유 골드 -->
-  <div class="hud">
-    <div>이동: 방향키 / WASD &nbsp;|&nbsp; 상호작용: E</div>
-    <div class="area">위치: <span id="areaText">오두막 마당</span></div>
-    <div class="gold">보유 골드: <span id="goldText">0</span> G</div>
+    <main id="stage">
+      <canvas id="game" width="800" height="480"></canvas>
+      <div id="toast" class="toast hidden" role="status"></div>
+    </main>
+
+    <!-- 모바일 / 터치 조작부 -->
+    <section id="controls" aria-label="터치 조작">
+      <div class="dpad">
+        <button type="button" class="dp up" data-dir="up" aria-label="위">▲</button>
+        <button type="button" class="dp left" data-dir="left" aria-label="왼쪽">◀</button>
+        <button type="button" class="dp right" data-dir="right" aria-label="오른쪽">▶</button>
+        <button type="button" class="dp down" data-dir="down" aria-label="아래">▼</button>
+      </div>
+      <button type="button" id="btn-interact" aria-label="상호작용">E<small>상호작용</small></button>
+    </section>
+
+    <p id="help">
+      이동: <b>WASD / 방향키</b> · 상호작용: <b>E</b> · 모바일: 방향 버튼 + <b>E</b> 버튼 (건물/석상을 직접 탭해도 됩니다)
+    </p>
   </div>
 
-  <!-- 터치 화면용 이동 및 상호작용 컨트롤 -->
-  <div class="touch-controls" aria-label="터치 조작">
-    <div class="touch-pad" aria-label="이동">
-      <button type="button" data-key="ArrowUp" aria-label="위로 이동">▲</button>
-      <button type="button" data-key="ArrowLeft" aria-label="왼쪽으로 이동">◀</button>
-      <span aria-hidden="true"></span>
-      <button type="button" data-key="ArrowRight" aria-label="오른쪽으로 이동">▶</button>
-      <span aria-hidden="true"></span>
-      <button type="button" data-key="ArrowDown" aria-label="아래로 이동">▼</button>
-    </div>
-    <button class="touch-interact" type="button" aria-label="상호작용">E</button>
-  </div>
-
-  <!-- 상단 우측: 리셋 버튼 -->
-  <button id="resetBtn" class="reset-btn" type="button">리셋</button>
-
-  <!-- 알림 메시지 -->
-  <div id="message" class="message"></div>
-
-  <!-- 하단 대화창 (Dialogue UI) -->
-  <div id="dialogue" class="dialogue hidden">
-    <div id="dlgName" class="dlg-name"></div>
-    <p id="dlgText" class="dlg-text"></p>
-    <span id="dlgNext" class="dlg-next">▼</span>
-    <div class="dlg-hint">클릭 또는 Enter</div>
-  </div>
-
-  <!-- 턱 깎기 미니게임 모달 -->
-  <div id="carveModal" class="modal hidden">
-    <div id="carvePanel" class="carve-panel">
-      <button id="carveClose" class="carve-close" type="button" title="닫기 (Esc)">✕</button>
-
-      <!-- 상단: V라인 완성도 게이지 -->
-      <div class="gauge-head">
-        <span>V라인 완성도</span>
-        <span id="gaugeText">0%</span>
-      </div>
-      <div class="gauge">
-        <div id="gaugeFill" class="gauge-fill"></div>
-      </div>
-
-      <!-- 중앙: 확대된 모아이 석상 (노란 점선 부분이 클릭할 턱) -->
-      <div id="carveStage" class="carve-stage">
-        <svg id="carveSvg" viewBox="0 0 240 300" xmlns="http://www.w3.org/2000/svg">
-          <!-- 몸통 -->
-          <polygon points="70,150 170,150 205,295 35,295" fill="#6f6f6f" stroke="#333" stroke-width="4"/>
-          <!-- 머리 -->
-          <rect x="45" y="20" width="150" height="130" fill="#8d8d8d" stroke="#333" stroke-width="4"/>
-          <!-- 눈썹 그늘 / 코 / 입 -->
-          <rect x="45" y="50" width="150" height="14" fill="#5f5f5f"/>
-          <rect x="112" y="62" width="16" height="48" fill="#757575"/>
-          <rect x="98" y="122" width="44" height="7" fill="#4a4a4a"/>
-          <!-- 턱 (클릭 대상): 모양은 script.js에서 게이지에 따라 뾰족하게 변함 -->
-          <polygon id="chinShape" class="chin" points="64,138 176,138 172,205 68,205"
-                   fill="#a3a3a3" stroke="#ffd54a" stroke-width="4" stroke-dasharray="8 5"/>
-        </svg>
-        <div id="carveDone" class="carve-done hidden">날렵한 V라인 완성!</div>
-      </div>
-
-      <!-- 하단: 안내 문구 + 망치질 버튼 -->
-      <p class="carve-guide">마우스로 턱을 클릭해 날렵하게 깎으세요!</p>
-      <button id="carveBtn" class="carve-btn" type="button">🔨 턱 깎기 (망치질)</button>
+  <!-- 공용 모달 (상점 / 홍보판 / 부동산 / 턱 깎기 / 대화 / 스토리) -->
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-box">
+      <button type="button" id="modal-close" class="modal-x" aria-label="닫기">✕</button>
+      <h2 id="modal-title"></h2>
+      <div id="modal-body"></div>
+      <p id="modal-msg" class="modal-msg" aria-live="polite"></p>
+      <div id="modal-actions" class="modal-actions"></div>
     </div>
   </div>
 

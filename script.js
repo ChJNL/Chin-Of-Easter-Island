@@ -1,1307 +1,1191 @@
-// ============================================================
-// 이스터 섬의 턱 - script.js
-// ============================================================
+/* =========================================================
+   이스터 섬의 턱 - script.js
+   Step 6: 마을 시설 (도구 상점 / 마을 홍보판 / 이스터 부동산 '인수')
+   ---------------------------------------------------------
+   구성
+   1) 설정/데이터 정의
+   2) 상태 & localStorage 저장/불러오기
+   3) 모달/토스트 UI 유틸
+   4) 시설 기능 (상점, 홍보판, 부동산, 턱 깎기, 대화, 스토리)
+   5) 맵/오브젝트/관광객
+   6) 입력 (키보드, 터치, 캔버스 탭)
+   7) 렌더링 & 게임 루프
+   ========================================================= */
+(() => {
+  'use strict';
 
-// ===== 0. HTML 요소 확인 =====
-// index.html이 이 script.js와 짝이 맞지 않으면(예전 버전 등) 원인을 화면에 알려줌
-const REQUIRED_IDS = [
-  "gameCanvas", "message", "goldText", "areaText", "resetBtn",
-  "dialogue", "dlgName", "dlgText", "dlgNext",
-  "carveModal", "carvePanel", "carveStage", "chinShape",
-  "gaugeFill", "gaugeText", "carveDone", "carveBtn", "carveClose",
-];
+  /* ---------------------------------------------------------
+   * 1) 설정 / 데이터 정의
+   * --------------------------------------------------------- */
+  const SAVE_KEY = 'easterIslandJaw_save_v1';
+  const W = 800;
+  const H = 480;
+  const PR = 12; // 플레이어 충돌 반경
+  const EMOJI_FONT = '"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
 
-(function checkElements() {
-  const missing = REQUIRED_IDS.filter((id) => !document.getElementById(id));
-  if (missing.length === 0) return;
-
-  const banner = document.createElement("div");
-  banner.style.cssText =
-    "position:fixed;left:0;right:0;top:0;padding:14px;z-index:9999;" +
-    "background:#b71c1c;color:#fff;font:14px sans-serif;text-align:center;";
-  banner.textContent =
-    "index.html이 최신 버전이 아닙니다. 누락된 요소 id: " + missing.join(", ") +
-    " → index.html, style.css, script.js 3개를 모두 새 버전으로 교체해 주세요.";
-  document.body.appendChild(banner);
-  throw new Error("누락된 HTML 요소: " + missing.join(", "));
-})();
-
-// ===== 1. 기본 설정 =====
-const canvas = document.getElementById("gameCanvas");
-const ctx = canvas.getContext("2d");
-const messageEl = document.getElementById("message");
-const goldTextEl = document.getElementById("goldText");
-const areaTextEl = document.getElementById("areaText");
-const resetBtn = document.getElementById("resetBtn");
-
-// 대화창 요소
-const dialogueEl = document.getElementById("dialogue");
-const dlgNameEl = document.getElementById("dlgName");
-const dlgTextEl = document.getElementById("dlgText");
-const dlgNextEl = document.getElementById("dlgNext");
-
-// 턱 깎기 모달 요소
-const carveModal = document.getElementById("carveModal");
-const carvePanel = document.getElementById("carvePanel");
-const carveStage = document.getElementById("carveStage");
-const chinEl = document.getElementById("chinShape");
-const gaugeFill = document.getElementById("gaugeFill");
-const gaugeText = document.getElementById("gaugeText");
-const carveDoneEl = document.getElementById("carveDone");
-const carveBtn = document.getElementById("carveBtn");
-const carveClose = document.getElementById("carveClose");
-
-// ===== 2. 저장 데이터 (LocalStorage) =====
-// 저장 구조:
-//  gold, isSharp(석상 V라인 여부), tutorialDone, rewardDone(관광객 보상 수령),
-//  villageVisited(마을 방문 여부), villageIntroDone(원주민 마을 소개 대화 완료),
-//  playerPos(맵 전체 기준 비율 0~1)
-const SAVE_KEY = "easterChinSave";
-const DEFAULT_PLAYER_POS = { x: 0.15, y: 0.75 }; // 오두막 앞 (맵 전체 가로의 15%)
-
-function defaultSave() {
-  return {
-    gold: 0,
-    isSharp: false,
-    tutorialDone: false,
-    rewardDone: false,
-    villageVisited: false,
-    villageIntroDone: false,
-    playerPos: { ...DEFAULT_PLAYER_POS },
+  const CFG = {
+    startGold: 100,
+    carveBase: 8,            // 클릭당 기본 게이지 상승량(%)
+    hammerMult: 2,           // 황금 망치: 상승량 배율
+    knifeMult: 2,            // 다이아 조각 칼: 팁 배율
+    touristBaseInterval: 12000, // 관광객 방문 간격(ms)
+    touristBuffInterval: 5000,  // 전단지 버프 중 간격(ms)
+    flyerDuration: 90 * 1000,   // 전단지 1회 지속시간
+    flyerMaxStack: 10 * 60 * 1000, // 연속 구매 시 최대 누적 시간
+    maxTourists: 6,
+    walkSpeed: 170,
+    boatSpeed: 190
   };
-}
 
-function clamp01(n) {
-  return Math.max(0, Math.min(1, n));
-}
-
-// 불러온 값이 이상해도(손상/수동 편집/이전 버전 저장 등) 안전한 값만 남김
-function sanitizeSave(raw) {
-  const data = defaultSave();
-  if (!raw || typeof raw !== "object") return data;
-
-  if (Number.isFinite(raw.gold) && raw.gold >= 0) data.gold = Math.floor(raw.gold);
-  data.isSharp = raw.isSharp === true;
-  data.tutorialDone = raw.tutorialDone === true;
-  data.rewardDone = raw.rewardDone === true;
-  data.villageVisited = raw.villageVisited === true;
-  data.villageIntroDone = raw.villageIntroDone === true;
-
-  const p = raw.playerPos;
-  if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
-    data.playerPos = { x: clamp01(p.x), y: clamp01(p.y) };
-  }
-  return data;
-}
-
-function loadSave() {
-  try {
-    const raw = localStorage.getItem(SAVE_KEY);
-    if (!raw) return defaultSave();
-    return sanitizeSave(JSON.parse(raw));
-  } catch (err) {
-    // JSON이 깨졌거나 localStorage 접근이 막힌 경우 → 초기 상태로 시작
-    console.warn("저장 데이터를 불러오지 못해 초기화합니다:", err);
-    try {
-      localStorage.removeItem(SAVE_KEY);
-    } catch (e) {
-      /* 무시 */
+  const ITEMS = [
+    {
+      id: 'hammer', icon: '🔨', name: '황금 망치', price: 300,
+      desc: '클릭당 턱 깎기 게이지 상승량이 2배가 됩니다.',
+      effect: '턱 깎기 속도 2배!'
+    },
+    {
+      id: 'knife', icon: '🔪', name: '다이아 조각 칼', price: 500,
+      desc: '관광객이 주는 팁 보상이 2배가 됩니다.',
+      effect: '관광객 팁 2배!'
     }
-    return defaultSave();
-  }
-}
-
-const save = loadSave();
-
-let ready = false;      // 초기화가 끝나기 전에는 저장하지 않음
-let resetting = false;  // 리셋 중에는 저장하지 않음 (새로고침 직전 자동 저장으로 되살아나는 것 방지)
-
-function saveGame() {
-  if (!ready || resetting) return;
-  try {
-    save.playerPos = {
-      x: clamp01(player.x / worldW),
-      y: clamp01(player.y / canvas.height),
-    };
-    localStorage.setItem(SAVE_KEY, JSON.stringify(save));
-  } catch (err) {
-    console.warn("저장에 실패했습니다:", err);
-  }
-}
-
-// ===== 3. 게임 오브젝트 =====
-// 주인공 (파란 타원형 도트)
-const player = { x: 0, y: 0, rx: 12, ry: 16, speed: 190 };
-
-// 낡은 오두막 (갈색 사각형)
-const hut = { x: 0, y: 0, w: 150, h: 110 };
-
-// 모아이 석상 (x, y는 발밑 중심 좌표)
-const moai = { x: 0, y: 0, w: 56, h: 110, interactRange: 90 };
-
-// 관광객 NPC
-// mode: null(대기) | "arriving"(석상 앞으로 걸어오는 중) | "leaving"(마을 쪽으로 돌아가는 중)
-const tourist = { x: 0, y: 0, rx: 12, ry: 16, speed: 110, visible: false, mode: null };
-
-// 원주민 NPC (마을 중앙)
-const villager = { x: 0, y: 0, rx: 12, ry: 16 };
-
-// 마을 건물들 (위치/크기는 layout()에서 계산)
-const buildings = [
-  {
-    id: "shop", name: "도구 상점", w: 150, h: 110, x: 0, y: 0,
-    prompt: "[E] 도구 상점 (다음 단계에서 오픈)",
-    closedMsg: "도구 상점은 다음 단계에서 오픈됩니다!",
-  },
-  {
-    id: "board", name: "홍보판", w: 110, h: 90, x: 0, y: 0,
-    prompt: "[E] 홍보물 붙이기 (다음 단계에서 오픈)",
-    closedMsg: "홍보판은 다음 단계에서 오픈됩니다!",
-  },
-  {
-    id: "estate", name: "이스터 부동산", w: 170, h: 120, x: 0, y: 0,
-    prompt: "[E] 땅 인수하기 (다음 단계에서 오픈)",
-    closedMsg: "이스터 부동산은 다음 단계에서 오픈됩니다!",
-  },
-];
-
-// 맵 구조 (모두 layout()에서 계산)
-//  [오두막 마당] ──울타리/문(fenceX)── [원주민 마을] ── [바다(seaStart~worldW)]
-let worldW = 0;       // 맵 전체 가로 길이 (화면 가로의 2배)
-let fenceX = 0;       // 마당과 마을의 경계(울타리) x
-let gateY = 0;        // 울타리 통로 중심 y
-let gateTop = 0;      // 통로 위쪽 끝 y
-let gateBottom = 0;   // 통로 아래쪽 끝 y
-let seaStart = 0;     // 바다 시작 x
-let camX = 0;         // 카메라 x (화면 왼쪽 끝이 가리키는 맵 좌표)
-let speckles = [];    // 모래 질감 점
-let obstacles = [];   // 충돌 사각형
-let animT = 0;        // 애니메이션용 시간(초)
-let currentArea = ""; // 현재 위치 이름 (HUD 표시용)
-
-// ===== 4. 화면 크기 / 레이아웃 =====
-function layout() {
-  // 창 크기가 바뀌어도 캐릭터가 같은 지점에 머물도록 비율 기억
-  const hadWorld = worldW > 0;
-  const rx = hadWorld ? player.x / worldW : 0;
-  const ry = hadWorld ? player.y / canvas.height : 0;
-
-  // 캔버스를 창 크기에 맞춰 꽉 채움 (회색 여백 없음)
-  canvas.width = window.visualViewport?.width || window.innerWidth;
-  canvas.height = window.visualViewport?.height || window.innerHeight;
-
-  const W = canvas.width;
-  const H = canvas.height;
-
-  worldW = W * 2;          // 맵은 화면 2개 분량 (마당 + 마을)
-  fenceX = W * 0.88;       // 마당 오른쪽 경계
-  seaStart = worldW - W * 0.2; // 맵 맨 오른쪽 끝이 바다
-
-  // 울타리 통로
-  gateY = H * 0.75;
-  gateTop = gateY - 60;
-  gateBottom = gateY + 60;
-
-  // 오두막 마당
-  hut.x = W * 0.08;
-  hut.y = H * 0.14;
-
-  moai.x = W * 0.5;
-  moai.y = H * 0.55;
-
-  // 걷는 중이 아닐 때만 튜토리얼용 기본 위치로 맞춤
-  if (!tourist.mode) {
-    tourist.x = moai.x - 95;
-    tourist.y = moai.y + 12;
-  }
-
-  // 원주민 마을
-  const vw = seaStart - fenceX; // 마을 가로 길이
-  const [shop, board, estate] = buildings;
-  shop.x = fenceX + vw * 0.12;
-  shop.y = H * 0.1;
-  board.x = fenceX + vw * 0.43;
-  board.y = H * 0.1;
-  estate.x = fenceX + vw * 0.68;
-  estate.y = H * 0.1;
-
-  villager.x = fenceX + vw * 0.5;
-  villager.y = H * 0.55;
-
-  obstacles = [
-    // 오두막, 모아이
-    { x: hut.x, y: hut.y, w: hut.w, h: hut.h },
-    { x: moai.x - moai.w / 2, y: moai.y - moai.h, w: moai.w, h: moai.h },
-    // 울타리 (통로 부분만 비어 있음)
-    { x: fenceX - 6, y: 0, w: 12, h: gateTop },
-    { x: fenceX - 6, y: gateBottom, w: 12, h: H - gateBottom },
-    // 원주민
-    { x: villager.x - 14, y: villager.y - villager.ry, w: 28, h: villager.ry * 2 },
   ];
-  buildings.forEach((b) => obstacles.push({ x: b.x, y: b.y, w: b.w, h: b.h }));
 
-  // 모래 점 (바다 영역 제외)
-  speckles = [];
-  const count = Math.floor((seaStart * H) / 2500);
-  for (let i = 0; i < count; i++) {
-    speckles.push({
-      x: Math.random() * seaStart,
-      y: Math.random() * H,
-      s: Math.random() < 0.15 ? 5 : 3,
+  const FLYER = { id: 'flyer', icon: '📱', name: 'SNS 전단지 배포', price: 150 };
+
+  const ZONES = {
+    coast: {
+      id: 'coast', icon: '🏖️', name: '해안가 구역', price: 1000,
+      desc: '파도 소리가 들리는 동쪽 해안. 오래전부터 "웃는 석상이 잠들어 있다"는 소문이 도는 땅입니다.',
+      reward: '선글라스 모아이 · 더블턱 모아이 등장!'
+    },
+    volcano: {
+      id: 'volcano', icon: '🌋', name: '화산 지대 구역', price: null,
+      desc: '아직 매물로 나오지 않았습니다. (준비 중)',
+      reward: '???'
+    }
+  };
+
+  // 석상 정의: 위치/보상/팁
+  const STATUES = {
+    main:       { id: 'main',       name: '할아버지의 모아이', map: 'village', x: 430, y: 290, reward: 50,  tip: 10, zone: null,    style: 'plain' },
+    sunglasses: { id: 'sunglasses', name: '선글라스 모아이',   map: 'coast',   x: 280, y: 280, reward: 120, tip: 25, zone: 'coast', style: 'sunglasses' },
+    doublechin: { id: 'doublechin', name: '더블턱 모아이',     map: 'coast',   x: 540, y: 280, reward: 200, tip: 40, zone: 'coast', style: 'double' }
+  };
+
+  const MAPS = {
+    village: { name: '원주민 마을' },
+    sea:     { name: '이스터 바다' },
+    coast:   { name: '해안가 구역' }
+  };
+
+  // 맵 출입구: rect에 닿으면 to 맵으로 이동
+  const EXITS = {
+    village: [
+      { rect: { x: 300, y: H - 22, w: 200, h: 22 }, to: 'sea',   spawn: { x: 400, y: 80 } },
+      { rect: { x: W - 20, y: 250, w: 20, h: 180 }, to: 'coast', spawn: { x: 70, y: 340 },
+        requires: () => state.zones.coast, blockedMsg: '🚧 이 땅은 아직 내 것이 아니다… 이스터 부동산에 문의해 보자.' }
+    ],
+    sea: [
+      { rect: { x: 300, y: 0, w: 200, h: 22 }, to: 'village', spawn: { x: 400, y: H - 70 } }
+    ],
+    coast: [
+      { rect: { x: 0, y: 250, w: 20, h: 180 }, to: 'village', spawn: { x: W - 70, y: 340 } }
+    ]
+  };
+
+  const VILLAGE_SPAWN = { x: 110, y: 230 };
+
+  /* ---------------------------------------------------------
+   * 2) 상태 & localStorage
+   * --------------------------------------------------------- */
+  function defaultState() {
+    return {
+      v: 1,
+      gold: CFG.startGold,
+      map: 'village',
+      px: VILLAGE_SPAWN.x,
+      py: VILLAGE_SPAWN.y,
+      tools: { hammer: false, knife: false },       // 구매한 도구
+      flyerUntil: 0,                                // 홍보 버프 종료 시각(타임스탬프, ms)
+      zones: { coast: false },                      // 인수한 구역
+      statues: {                                    // 석상 상태 (깎기 진행도/횟수/해금)
+        main:       { unlocked: true,  progress: 0, count: 0 },
+        sunglasses: { unlocked: false, progress: 0, count: 0 },
+        doublechin: { unlocked: false, progress: 0, count: 0 }
+      },
+      flags: { diary: false, bottle: false, talked: 0 }
+    };
+  }
+
+  // 저장 데이터를 기본 구조에 안전하게 병합(구버전/손상 데이터 대응)
+  function mergeInto(base, src) {
+    if (!src || typeof src !== 'object') return base;
+    for (const k of Object.keys(base)) {
+      if (!(k in src)) continue;
+      const b = base[k];
+      const s = src[k];
+      if (b && typeof b === 'object' && !Array.isArray(b)) {
+        base[k] = mergeInto(b, s);
+      } else if (typeof s === typeof b) {
+        base[k] = s;
+      }
+    }
+    return base;
+  }
+
+  function sanitizeState(s) {
+    if (!Number.isFinite(s.gold) || s.gold < 0) s.gold = 0;
+    s.gold = Math.floor(s.gold);
+    if (!Number.isFinite(s.flyerUntil)) s.flyerUntil = 0;
+    if (!MAPS[s.map]) s.map = 'village';
+    if (s.map === 'coast' && !s.zones.coast) s.map = 'village';
+    if (!Number.isFinite(s.px) || !Number.isFinite(s.py)) { s.px = VILLAGE_SPAWN.x; s.py = VILLAGE_SPAWN.y; }
+    s.px = Math.min(W - PR, Math.max(PR, s.px));
+    s.py = Math.min(H - PR, Math.max(PR, s.py));
+    for (const id of Object.keys(s.statues)) {
+      const st = s.statues[id];
+      if (!Number.isFinite(st.progress) || st.progress < 0 || st.progress >= 100) st.progress = 0;
+      if (!Number.isFinite(st.count) || st.count < 0) st.count = 0;
+    }
+    // 인수한 구역의 석상은 항상 해금 상태 유지
+    for (const d of Object.values(STATUES)) {
+      if (d.zone && s.zones[d.zone]) s.statues[d.id].unlocked = true;
+    }
+    s.statues.main.unlocked = true;
+    return s;
+  }
+
+  function loadGame() {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      if (!raw) return defaultState();
+      return sanitizeState(mergeInto(defaultState(), JSON.parse(raw)));
+    } catch (e) {
+      console.warn('저장 데이터를 불러오지 못했습니다. 새로 시작합니다.', e);
+      return defaultState();
+    }
+  }
+
+  let state = loadGame();
+  const player = { x: state.px, y: state.py };
+
+  function saveGame() {
+    try {
+      state.px = player.x;
+      state.py = player.y;
+      localStorage.setItem(SAVE_KEY, JSON.stringify(state));
+      return true;
+    } catch (e) {
+      console.warn('저장 실패', e);
+      return false;
+    }
+  }
+
+  /* ---------------------------------------------------------
+   * 3) UI 유틸 (DOM, 토스트, 모달)
+   * --------------------------------------------------------- */
+  const $ = (id) => document.getElementById(id);
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function btn(label, cls, onClick) {
+    const b = el('button', cls || '', label);
+    b.type = 'button';
+    if (onClick) b.addEventListener('click', onClick);
+    return b;
+  }
+
+  let toastTimer = 0;
+  let toastCooldown = 0;
+  function showToast(text, ms = 2400) {
+    const t = $('toast');
+    t.textContent = text;
+    t.classList.remove('hidden');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.add('hidden'), ms);
+  }
+
+  // ----- 모달 -----
+  let modal = null; // { title, render, onClose, onKey, tick, api }
+
+  function openModal(opts) {
+    if (modal) closeModal();
+    modal = opts;
+    modal.api = {
+      setMsg(text, type) {
+        const m = $('modal-msg');
+        m.textContent = text || '';
+        m.className = 'modal-msg' + (type ? ' ' + type : '');
+      },
+      refresh() { renderModalBody(); },
+      close() { closeModal(); }
+    };
+    $('modal-title').textContent = opts.title;
+    $('modal-msg').textContent = '';
+    $('modal-msg').className = 'modal-msg';
+    renderModalBody();
+    $('modal').classList.remove('hidden');
+    clearDirKeys();
+  }
+
+  function renderModalBody() {
+    if (!modal) return;
+    const body = $('modal-body');
+    const actions = $('modal-actions');
+    body.innerHTML = '';
+    actions.innerHTML = '';
+    modal.render(body, actions, modal.api);
+  }
+
+  function closeModal() {
+    if (!modal) return;
+    const m = modal;
+    modal = null;
+    $('modal').classList.add('hidden');
+    $('modal-body').innerHTML = '';
+    $('modal-actions').innerHTML = '';
+    $('modal-msg').textContent = '';
+    if (m.onClose) m.onClose();
+  }
+
+  function openInfo(title, text, label = '확인', onClose) {
+    openModal({
+      title,
+      onClose,
+      render(body, actions, api) {
+        const p = el('p', 'modal-desc', text);
+        p.style.fontSize = '1rem';
+        p.style.lineHeight = '1.6';
+        body.appendChild(p);
+        actions.appendChild(btn(label, '', () => api.close()));
+      }
     });
   }
 
-  if (hadWorld) {
-    player.x = rx * worldW;
-    player.y = ry * H;
+  /* ---------------------------------------------------------
+   * 4) 게임 로직: 버프/배율, HUD, 시설 기능
+   * --------------------------------------------------------- */
+  const flyerActive = () => state.flyerUntil > Date.now();
+  const carvePerClick = () => CFG.carveBase * (state.tools.hammer ? CFG.hammerMult : 1);
+  const tipMult = () => (state.tools.knife ? CFG.knifeMult : 1);
+  const isUnlocked = (sid) => !!state.statues[sid].unlocked;
+
+  function fmtTime(ms) {
+    const s = Math.max(0, Math.ceil(ms / 1000));
+    return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
   }
-  clampPlayer();
-  updateCamera(0, true);
-}
 
-function clampPlayer() {
-  player.x = Math.max(player.rx, Math.min(maxPlayerX(), player.x));
-  player.y = Math.max(player.ry, Math.min(canvas.height - player.ry, player.y));
-}
-
-// 플레이어가 갈 수 있는 가장 오른쪽 x (해안선 앞까지)
-function maxPlayerX() {
-  return seaStart - 20 - player.rx;
-}
-
-// 카메라: 플레이어를 따라 좌우로 스크롤 (맵 밖은 보이지 않게 제한)
-function updateCamera(dt, snap) {
-  const maxCam = Math.max(0, worldW - canvas.width);
-  const target = Math.max(0, Math.min(maxCam, player.x - canvas.width / 2));
-  camX = snap ? target : camX + (target - camX) * Math.min(1, dt * 8);
-}
-
-// ===== 5. 메시지 / 골드 / 위치 UI =====
-let messageUntil = 0;
-
-function showMessage(text, ms = 2000) {
-  messageEl.textContent = text;
-  messageUntil = performance.now() + ms;
-}
-
-function updateGoldUI(bump = false) {
-  goldTextEl.textContent = save.gold;
-  if (bump) {
-    const box = goldTextEl.parentElement;
-    box.classList.remove("bump");
-    void box.offsetWidth; // 애니메이션 재시작
-    box.classList.add("bump");
+  function updateHUD() {
+    $('stat-gold').textContent = `💰 ${state.gold.toLocaleString('ko-KR')} G`;
+    const tools = [];
+    if (state.tools.hammer) tools.push('🔨 황금 망치');
+    if (state.tools.knife) tools.push('🔪 다이아 칼');
+    $('stat-tools').textContent = tools.length ? tools.join(' · ') : '🧰 도구 없음';
+    const rem = state.flyerUntil - Date.now();
+    const buff = $('stat-buff');
+    if (rem > 0) {
+      buff.classList.remove('hidden');
+      buff.textContent = `📣 전단지 ${fmtTime(rem)}`;
+    } else {
+      buff.classList.add('hidden');
+    }
+    $('stat-map').textContent = `📍 ${MAPS[state.map].name}`;
   }
-}
 
-function setArea(name) {
-  if (currentArea === name) return;
-  currentArea = name;
-  areaTextEl.textContent = name;
-}
+  // ----- 도구 상점 -----
+  function openShop() {
+    openModal({
+      title: '🏪 도구 상점',
+      onClose: saveGame,
+      render(body, actions, api) {
+        body.appendChild(el('p', 'modal-desc', '턱 깎기 장인을 위한 특별 도구들! 한 번 사면 평생 쓸 수 있어요.'));
+        body.appendChild(el('div', 'gold-line', `보유 골드: 💰 ${state.gold.toLocaleString('ko-KR')} G`));
+        ITEMS.forEach((item) => {
+          const owned = !!state.tools[item.id];
+          const card = el('div', 'card' + (owned ? ' owned' : ''));
+          card.appendChild(el('div', 'card-icon', item.icon));
+          const info = el('div');
+          info.appendChild(el('div', 'card-name', item.name));
+          info.appendChild(el('div', 'card-desc', item.desc));
+          info.appendChild(el('div', 'card-price', `${item.price} Gold`));
+          card.appendChild(info);
+          if (owned) {
+            card.appendChild(el('span', 'badge', '보유 중'));
+          } else {
+            card.appendChild(btn('구매', '', () => buyTool(item, api)));
+          }
+          body.appendChild(card);
+        });
+        actions.appendChild(btn('닫기', 'ghost', () => api.close()));
+      }
+    });
+  }
 
-// 마당 ↔ 마을 이동 감지 + 마을 첫 방문 처리
-function checkArea() {
-  const inVillage = player.x > fenceX;
-  setArea(inVillage ? "원주민 마을" : "오두막 마당");
-
-  if (inVillage && !save.villageVisited) {
-    save.villageVisited = true;
+  function buyTool(item, api) {
+    if (state.tools[item.id]) { api.setMsg('이미 보유한 도구입니다.', 'warn'); return; }
+    if (state.gold < item.price) {
+      api.setMsg(`골드가 부족합니다! (필요 ${item.price} G / 보유 ${state.gold} G)`, 'error');
+      return;
+    }
+    state.gold -= item.price;
+    state.tools[item.id] = true;
     saveGame();
-    showMessage("원주민 마을에 도착했다! 가운데 있는 원주민에게 말을 걸어보자.", 4000);
+    updateHUD();
+    api.refresh();
+    api.setMsg(`✅ ${item.name} 구매 완료! ${item.effect}`, 'ok');
   }
-}
 
-// ===== 6. 상호작용 대상 찾기 =====
-function isNearMoai() {
-  const dx = player.x - moai.x;
-  const dy = player.y - (moai.y - moai.h / 2);
-  return Math.hypot(dx, dy) < moai.interactRange;
-}
+  // ----- 마을 홍보판 -----
+  function openBoard() {
+    openModal({
+      title: '📢 마을 홍보판',
+      onClose: saveGame,
+      render(body, actions, api) {
+        body.appendChild(el('p', 'modal-desc', '관광객들이 더 자주 찾아오도록 이스터 섬을 SNS에 알려 보세요!'));
+        body.appendChild(el('div', 'gold-line', `보유 골드: 💰 ${state.gold.toLocaleString('ko-KR')} G`));
+        const card = el('div', 'card');
+        card.appendChild(el('div', 'card-icon', FLYER.icon));
+        const info = el('div');
+        info.appendChild(el('div', 'card-name', FLYER.name));
+        info.appendChild(el('div', 'card-desc',
+          `${CFG.flyerDuration / 1000}초 동안 관광객 방문 속도가 약 ${(CFG.touristBaseInterval / CFG.touristBuffInterval).toFixed(1)}배 빨라집니다. 다시 사면 시간이 누적돼요.`));
+        info.appendChild(el('div', 'card-price', `${FLYER.price} Gold`));
+        const status = el('div', 'card-desc');
+        status.style.color = '#7ee08a';
+        info.appendChild(status);
+        card.appendChild(info);
+        card.appendChild(btn('배포하기', '', () => buyFlyer(api)));
+        body.appendChild(card);
 
-function nearPoint(o, range) {
-  return Math.hypot(player.x - o.x, player.y - o.y) < range;
-}
+        const refreshStatus = () => {
+          const rem = state.flyerUntil - Date.now();
+          status.textContent = rem > 0 ? `📣 홍보 효과 진행 중: 남은 시간 ${fmtTime(rem)}` : '';
+        };
+        refreshStatus();
+        modal.tick = refreshStatus;
+        actions.appendChild(btn('닫기', 'ghost', () => api.close()));
+      }
+    });
+  }
 
-// 플레이어와 사각형 사이의 가장 가까운 거리로 판정
-function nearRect(r, range) {
-  const px = Math.max(r.x, Math.min(player.x, r.x + r.w));
-  const py = Math.max(r.y, Math.min(player.y, r.y + r.h));
-  return Math.hypot(player.x - px, player.y - py) < range;
-}
+  function buyFlyer(api) {
+    if (state.gold < FLYER.price) {
+      api.setMsg(`골드가 부족합니다! (필요 ${FLYER.price} G / 보유 ${state.gold} G)`, 'error');
+      return;
+    }
+    state.gold -= FLYER.price;
+    const base = Math.max(Date.now(), state.flyerUntil);
+    state.flyerUntil = Math.min(base + CFG.flyerDuration, Date.now() + CFG.flyerMaxStack);
+    saveGame();
+    updateHUD();
+    api.refresh();
+    api.setMsg('📣 SNS 전단지 배포 완료! 관광객이 몰려옵니다!', 'ok');
+  }
 
-// 지금 E 키로 상호작용할 수 있는 대상 (없으면 null)
-function getTarget() {
-  if (dialogueActive || carveActive) return null;
+  // ----- 이스터 부동산 ('인수' 시스템) -----
+  function openRealty() {
+    openModal({
+      title: '🏢 이스터 부동산',
+      onClose: saveGame,
+      render(body, actions, api) {
+        body.appendChild(el('p', 'modal-desc', '어서 오세요, 이스터 부동산입니다. 오두막 마당 너머의 새 구역을 인수해 섬을 넓혀 보세요.'));
+        body.appendChild(el('div', 'gold-line', `보유 골드: 💰 ${state.gold.toLocaleString('ko-KR')} G`));
 
-  // 모아이 석상 (턱을 깎은 뒤에는 안내 문구 없이 E만 반응)
-  if (isNearMoai()) {
+        // 보유 구역 요약
+        const owned = ['🛖 오두막 마당 (기본)'];
+        if (state.zones.coast) owned.push('🏖️ 해안가 구역');
+        body.appendChild(el('p', 'zone-note', `내 소유 구역: ${owned.join(' · ')}`));
+
+        Object.values(ZONES).forEach((z) => {
+          const isOwned = !!state.zones[z.id];
+          const soon = z.price == null;
+          const card = el('div', 'card' + (isOwned ? ' owned' : '') + (soon ? ' locked' : ''));
+          card.appendChild(el('div', 'card-icon', z.icon));
+          const info = el('div');
+          info.appendChild(el('div', 'card-name', z.name));
+          info.appendChild(el('div', 'card-desc', z.desc));
+          if (!soon) {
+            info.appendChild(el('div', 'card-desc', `🎁 ${z.reward}`));
+            info.appendChild(el('div', 'card-price', `${z.price.toLocaleString('ko-KR')} Gold`));
+          }
+          card.appendChild(info);
+          if (isOwned) card.appendChild(el('span', 'badge', '인수 완료'));
+          else if (soon) card.appendChild(el('span', 'badge', '준비 중'));
+          else card.appendChild(btn('구역 인수', '', () => acquireZone(z.id, api)));
+          body.appendChild(card);
+        });
+        actions.appendChild(btn('닫기', 'ghost', () => api.close()));
+      }
+    });
+  }
+
+  function acquireZone(zoneId, api) {
+    const z = ZONES[zoneId];
+    if (!z || z.price == null) return;
+    if (state.zones[zoneId]) { api.setMsg('이미 인수한 구역입니다.', 'warn'); return; }
+    if (state.gold < z.price) {
+      api.setMsg(`골드가 부족합니다! (필요 ${z.price.toLocaleString('ko-KR')} G / 보유 ${state.gold.toLocaleString('ko-KR')} G)`, 'error');
+      return;
+    }
+    state.gold -= z.price;
+    state.zones[zoneId] = true;
+    for (const d of Object.values(STATUES)) {
+      if (d.zone === zoneId) state.statues[d.id].unlocked = true; // 새 석상 해금
+    }
+    state.flags.diary = true;
+    saveGame();
+    updateHUD();
+    buildObjects();
+    api.close();
+    openStory(zoneId);
+  }
+
+  function openStory(zoneId) {
+    openModal({
+      title: '📖 할아버지의 숨겨진 일기장',
+      onClose() {
+        saveGame();
+        showToast('✨ 해안가 구역에 새로운 모아이 2기가 나타났다! 동쪽 길로 가 보자.', 4200);
+      },
+      render(body, actions, api) {
+        const story = el('div', 'story');
+        const lines = [
+          { t: `계약서에 도장을 찍자, 부동산 주인이 낡은 나무 상자를 조심스레 건네주었다. "이 땅의 옛 주인이 남긴 겁니다."` },
+          { t: '소금기에 바랜 상자 속에는 할아버지의 일기장이 들어 있었다. 모서리가 닳도록 넘겨 본 흔적이 가득했다.' },
+          { t: '"오늘도 해가 지도록 턱을 깎았다. 선글라스를 낀 녀석은 젊은 날 바다 건너 처음 본 낯선 세상을 닮았고, 턱이 두 개인 녀석은 언제나 배불리 먹고 웃던 우리 가족을 닮았다."', c: 'quote' },
+          { t: '"내 손주야. 이 땅은 돈으로 사는 것이 아니라 마음으로 이어받는 것이란다. 부디 이 섬의 턱을 지켜다오."', c: 'quote' },
+          { t: '마지막 장 사이에는 화산 쪽을 가리키는 빛바랜 지도 조각이 끼워져 있었다… 이야기는 아직 끝나지 않았다.' },
+          { t: '동쪽 해안에 눈부신 햇살과 함께 두 기의 석상이 모습을 드러냈다!' }
+        ];
+        lines.forEach((ln, i) => {
+          const p = el('p', ln.c || '', ln.t);
+          p.style.animationDelay = `${i * 0.7}s`;
+          story.appendChild(p);
+        });
+        body.appendChild(story);
+        actions.appendChild(btn('일기장을 덮는다', '', () => api.close()));
+      }
+    });
+  }
+
+  // ----- 턱 깎기 미니게임 -----
+  function openCarve(sid) {
+    const d = STATUES[sid];
+    openModal({
+      title: `⛏ ${d.name} - 턱 깎기`,
+      onClose: saveGame,
+      render(body, actions, api) {
+        const st = state.statues[sid];
+
+        const stage = el('div', 'carve-stage');
+        const icon = el('div', 'carve-icon');
+        if (d.style === 'double') icon.appendChild(el('span', 'chin2'));
+        icon.appendChild(document.createTextNode('🗿'));
+        if (d.style === 'sunglasses') icon.appendChild(el('span', 'glasses', '🕶️'));
+        stage.appendChild(icon);
+        body.appendChild(stage);
+
+        const gauge = el('div', 'gauge');
+        const fill = el('div', 'gauge-fill');
+        const gtext = el('div', 'gauge-text');
+        gauge.appendChild(fill);
+        gauge.appendChild(gtext);
+        body.appendChild(gauge);
+
+        const info = el('div', 'carve-info');
+        info.appendChild(el('span', '', `클릭당 +${carvePerClick()}%${state.tools.hammer ? ' (🔨 황금 망치)' : ''}`));
+        info.appendChild(el('span', '', `완성 보상 ${d.reward} G`));
+        const countEl = el('span', '', '');
+        info.appendChild(countEl);
+        body.appendChild(info);
+
+        const updateGauge = () => {
+          fill.style.width = `${st.progress}%`;
+          gtext.textContent = `${Math.floor(st.progress)}%`;
+          countEl.textContent = `완성 ${st.count}회`;
+        };
+
+        const doCarve = () => {
+          st.progress = Math.min(100, st.progress + carvePerClick());
+          icon.classList.remove('hit');
+          void icon.offsetWidth; // 애니메이션 재시작
+          icon.classList.add('hit');
+          if (st.progress >= 100) {
+            st.progress = 0;
+            st.count += 1;
+            state.gold += d.reward;
+            api.setMsg(`🎉 턱 깎기 완성! +${d.reward} G`, 'ok');
+            updateHUD();
+            saveGame();
+          } else {
+            api.setMsg('', '');
+          }
+          updateGauge();
+        };
+
+        const carveBtn = btn('⛏ 턱 깎기!', 'carve-btn', doCarve);
+        carveBtn.addEventListener('mousedown', (e) => e.preventDefault()); // 포커스 방지(스페이스 중복 방지)
+        body.appendChild(carveBtn);
+
+        modal.onKey = (e) => {
+          if (e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyE') {
+            if (!e.repeat) doCarve();
+            return true;
+          }
+          return false;
+        };
+        updateGauge();
+        actions.appendChild(btn('닫기', 'ghost', () => api.close()));
+      }
+    });
+  }
+
+  // ----- 원주민 대화 -----
+  function nativeLines() {
+    const L = [
+      '오, 손주 왔구나! 이 섬에선 모아이의 턱이 마을의 복을 불러온다고 믿는단다.',
+      '석상 앞에서 턱을 깎으면 골드를 벌 수 있고, 관광객들도 구경 와서 팁을 두둑이 주지.',
+      '도구 상점의 황금 망치는 깎는 속도를 두 배로, 다이아 조각 칼은 팁을 두 배로 만들어 준단다.',
+      '마을 홍보판에 SNS 전단지를 붙이면 관광객이 훨씬 자주 온다네.'
+    ];
+    if (!state.zones.coast) {
+      L.push('동쪽 땅은 이스터 부동산에서 팔고 있다더군. 네 할아버지가 늘 탐내던 땅이지…');
+    } else {
+      L.push('동쪽 해안을 인수했구나! 그곳 석상들은 네 할아버지의 자랑이었단다.');
+      L.push('일기장은 읽어 봤니? 화산 쪽에도 아직 풀리지 않은 이야기가 남아 있다지… 때가 되면 알게 될 게다.');
+    }
+    return L;
+  }
+
+  function openDialogue(name, face, lines) {
+    let idx = 0;
+    openModal({
+      title: `${face} ${name}`,
+      onClose: saveGame,
+      render(body, actions, api) {
+        const wrap = el('div', 'dialogue');
+        wrap.appendChild(el('div', 'dialogue-face', face));
+        const right = el('div');
+        right.appendChild(el('div', 'dialogue-text', lines[idx]));
+        right.appendChild(el('div', 'dialogue-page', `${idx + 1} / ${lines.length}`));
+        wrap.appendChild(right);
+        body.appendChild(wrap);
+        if (idx < lines.length - 1) {
+          actions.appendChild(btn('다음 ▶', '', () => { idx += 1; api.refresh(); }));
+        } else {
+          actions.appendChild(btn('끝', '', () => api.close()));
+        }
+      }
+    });
+  }
+
+  function interactNative() {
+    state.flags.talked += 1;
+    openDialogue('원주민 어르신', '🧓', nativeLines());
+  }
+
+  function interactHut() {
+    saveGame();
+    openInfo('🛖 할아버지의 오두막', '낡았지만 따뜻한 오두막. 잠시 쉬어 가며 진행 상황을 저장했다. 💾', '확인');
+  }
+
+  function interactBottle() {
+    if (state.flags.bottle) {
+      openInfo('🍾 빈 병', '이미 쪽지를 꺼낸 병이다. 파도에 흔들리며 떠다닌다.');
+      return;
+    }
+    state.flags.bottle = true;
+    state.gold += 50;
+    saveGame();
+    updateHUD();
+    openInfo('🍾 바다에 뜬 병', '병 속에는 금화 50 G와 쪽지가 들어 있었다.\n"동쪽 해안에는 내 소중한 보물이 잠들어 있단다. – 할아버지"', '확인');
+  }
+
+  // ----- 저장 / 초기화 -----
+  function manualSave() {
+    showToast(saveGame() ? '💾 저장되었습니다.' : '⚠ 저장에 실패했습니다.');
+  }
+
+  function confirmReset() {
+    openModal({
+      title: '⚠ 진행 초기화',
+      render(body, actions, api) {
+        const p = el('p', 'modal-desc', '골드, 도구, 홍보 버프, 인수한 구역, 석상 상태까지 모든 진행 상황이 삭제됩니다. 정말 초기화할까요?');
+        p.style.fontSize = '1rem';
+        body.appendChild(p);
+        actions.appendChild(btn('취소', 'ghost', () => api.close()));
+        actions.appendChild(btn('초기화', 'danger', () => { api.close(); doReset(); }));
+      }
+    });
+  }
+
+  function doReset() {
+    try { localStorage.removeItem(SAVE_KEY); } catch (e) { /* 무시 */ }
+    state = defaultState();
+    player.x = state.px;
+    player.y = state.py;
+    tourists.length = 0;
+    floaters.length = 0;
+    spawnAcc = 8000;
+    buildObjects();
+    updateHUD();
+    saveGame();
+    showToast('🗑 새 게임을 시작합니다.');
+  }
+
+  /* ---------------------------------------------------------
+   * 5) 맵 / 오브젝트 / 관광객
+   * --------------------------------------------------------- */
+  let objects = [];
+  let nearObj = null;
+  const tourists = [];
+  const floaters = [];
+  let spawnAcc = 8000;
+
+  function makeStatueObj(d) {
     return {
-      id: "moai",
-      label: save.isSharp ? null : "[E] 턱 깎기",
-      x: moai.x,
-      y: moai.y - moai.h,
-      below: false,
+      id: d.id, type: 'statue', sid: d.id, cx: d.x, cy: d.y,
+      rect: { x: d.x - 24, y: d.y + 4, w: 48, h: 30 },
+      blocking: true,
+      prompt: `${d.name} 턱 깎기`,
+      action: () => openCarve(d.id),
+      draw: drawStatueObj
     };
   }
 
-  // 원주민 NPC
-  if (nearPoint(villager, 75)) {
-    return {
-      id: "villager",
-      label: "[E] 대화하기",
-      x: villager.x,
-      y: villager.y - villager.ry - 4,
-      below: false,
-    };
+  function buildObjects() {
+    objects = [];
+    if (state.map === 'village') {
+      objects.push(
+        { id: 'hut', type: 'building', rect: { x: 30, y: 40, w: 150, h: 110 }, blocking: true, emoji: '🛖', size: 62,
+          color: '#b98a54', stroke: '#6b4520', label: '할아버지의 오두막', prompt: '오두막에서 쉬기 (저장)', action: interactHut, draw: drawBuildingObj },
+        { id: 'shop', type: 'building', rect: { x: 250, y: 40, w: 120, h: 90 }, blocking: true, emoji: '🏪', size: 54,
+          color: '#e0b25c', stroke: '#8a5a1c', label: '도구 상점', prompt: '도구 상점 열기', action: openShop, draw: drawBuildingObj },
+        { id: 'board', type: 'building', rect: { x: 410, y: 50, w: 80, h: 80 }, blocking: true, emoji: '📢', size: 44,
+          color: '#c97a5a', stroke: '#74311c', label: '마을 홍보판', prompt: '마을 홍보판 보기', action: openBoard, draw: drawBuildingObj },
+        { id: 'realty', type: 'building', rect: { x: 620, y: 40, w: 140, h: 110 }, blocking: true, emoji: '🏢', size: 60,
+          color: '#7fa6c9', stroke: '#2c506e', label: '이스터 부동산', prompt: '이스터 부동산 입장', action: openRealty, draw: drawBuildingObj },
+        { id: 'native', type: 'npc', rect: { x: 176, y: 322, w: 28, h: 26 }, blocking: true, emoji: '🧓', size: 32,
+          label: '원주민 어르신', prompt: '원주민과 대화하기', action: interactNative, draw: drawNpcObj }
+      );
+    }
+    if (state.map === 'sea') {
+      objects.push(
+        { id: 'bottle', type: 'item', rect: { x: 604, y: 284, w: 32, h: 32 }, blocking: false, emoji: '🍾', size: 30,
+          label: '', prompt: '떠다니는 병 줍기', action: interactBottle, draw: drawBottleObj }
+      );
+    }
+    for (const d of Object.values(STATUES)) {
+      if (d.map === state.map && isUnlocked(d.id)) objects.push(makeStatueObj(d));
+    }
   }
 
-  // 마을 건물: 소개 대화가 끝난 뒤에만 안내가 뜸
-  if (save.villageIntroDone) {
-    for (const b of buildings) {
-      if (nearRect(b, 55)) {
-        return { id: b.id, label: b.prompt, x: b.x + b.w / 2, y: b.y + b.h, below: true, building: b };
+  function circleRect(cx, cy, r, rc) {
+    const nx = clamp(cx, rc.x, rc.x + rc.w);
+    const ny = clamp(cy, rc.y, rc.y + rc.h);
+    const dx = cx - nx;
+    const dy = cy - ny;
+    return dx * dx + dy * dy < r * r;
+  }
+  function blockedAt(x, y) {
+    for (const o of objects) {
+      if (o.blocking && circleRect(x, y, PR, o.rect)) return true;
+    }
+    return false;
+  }
+  function boxOverlap(x, y, r, rc) {
+    return x + r > rc.x && x - r < rc.x + rc.w && y + r > rc.y && y - r < rc.y + rc.h;
+  }
+  function distToRect(x, y, rc) {
+    const nx = clamp(x, rc.x, rc.x + rc.w);
+    const ny = clamp(y, rc.y, rc.y + rc.h);
+    return Math.hypot(x - nx, y - ny);
+  }
+
+  function changeMap(to, spawn) {
+    state.map = to;
+    player.x = spawn.x;
+    player.y = spawn.y;
+    tourists.length = 0;
+    floaters.length = 0;
+    spawnAcc = 8000;
+    buildObjects();
+    updateHUD();
+    saveGame();
+    showToast(`📍 ${MAPS[to].name}`, 1600);
+  }
+
+  function checkExits(prevX, prevY) {
+    for (const e of EXITS[state.map] || []) {
+      if (!boxOverlap(player.x, player.y, PR, e.rect)) continue;
+      if (e.requires && !e.requires()) {
+        player.x = prevX;
+        player.y = prevY;
+        if (toastCooldown <= 0) {
+          showToast(e.blockedMsg || '지금은 갈 수 없다.');
+          toastCooldown = 2.5;
+        }
+        return;
+      }
+      changeMap(e.to, e.spawn);
+      return;
+    }
+  }
+
+  // ----- 관광객 -----
+  const TOURIST_EMOJI = ['🚶', '🚶‍♀️', '🧍', '🧍‍♀️'];
+
+  function spawnTourist() {
+    if (tourists.length >= CFG.maxTourists) return;
+    const list = Object.values(STATUES).filter((d) => d.map === state.map && isUnlocked(d.id));
+    if (!list.length) return;
+    const d = list[Math.floor(Math.random() * list.length)];
+    tourists.push({
+      x: -20,
+      y: state.map === 'village' ? 200 + Math.random() * 220 : 300 + Math.random() * 120,
+      sid: d.id,
+      tx: d.x + (Math.random() * 80 - 40),
+      ty: d.y + 54 + Math.random() * 18,
+      phase: 'in',
+      timer: 0,
+      emoji: TOURIST_EMOJI[Math.floor(Math.random() * TOURIST_EMOJI.length)]
+    });
+  }
+
+  function updateTourists(dt) {
+    spawnAcc += dt * 1000;
+    const interval = flyerActive() ? CFG.touristBuffInterval : CFG.touristBaseInterval;
+    if (spawnAcc >= interval) {
+      spawnAcc = 0;
+      spawnTourist();
+    }
+    for (let i = tourists.length - 1; i >= 0; i--) {
+      const t = tourists[i];
+      if (t.phase === 'in') {
+        const dx = t.tx - t.x;
+        const dy = t.ty - t.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < 4) { t.phase = 'photo'; t.timer = 1.3; }
+        else { t.x += (dx / dist) * 85 * dt; t.y += (dy / dist) * 85 * dt; }
+      } else if (t.phase === 'photo') {
+        t.timer -= dt;
+        if (t.timer <= 0) {
+          const d = STATUES[t.sid];
+          const tip = Math.round(d.tip * tipMult());
+          state.gold += tip;
+          floaters.push({ x: t.x, y: t.y - 30, text: `+${tip} G`, life: 1.4 });
+          updateHUD();
+          t.phase = 'out';
+        }
+      } else {
+        t.x += 95 * dt;
+        if (t.x > W + 30) tourists.splice(i, 1);
       }
     }
-  }
-  return null;
-}
-
-// ===== 7. 키보드 입력 =====
-// e.code는 물리적 키 위치라서 한글 입력 상태에서도 WASD가 동작합니다.
-const keys = {};
-
-window.addEventListener("keydown", (e) => {
-  const blocked = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter"];
-  if (blocked.includes(e.code)) e.preventDefault();
-
-  keys[e.code] = true;
-  if (e.repeat) return;
-
-  // 턱 깎기 팝업이 열려 있을 때: Esc로 닫기
-  if (carveActive) {
-    if (e.code === "Escape" && !carveFinishing) closeCarve();
-    return;
+    for (let i = floaters.length - 1; i >= 0; i--) {
+      floaters[i].life -= dt;
+      floaters[i].y -= 28 * dt;
+      if (floaters[i].life <= 0) floaters.splice(i, 1);
+    }
   }
 
-  // 대화 중에는 Enter로만 진행
-  if (dialogueActive) {
-    if (e.code === "Enter" || e.code === "NumpadEnter") advanceDialogue();
-    return;
-  }
-
-  if (e.code === "KeyE") interact();
-});
-
-window.addEventListener("keyup", (e) => {
-  keys[e.code] = false;
-});
-
-// 터치 방향 패드는 기존 키보드 이동 상태를 그대로 사용
-document.querySelectorAll(".touch-pad [data-key]").forEach((button) => {
-  const key = button.dataset.key;
-
-  button.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    button.setPointerCapture(e.pointerId);
-    keys[key] = true;
-    button.classList.add("is-pressed");
-  });
-
-  const release = () => {
-    keys[key] = false;
-    button.classList.remove("is-pressed");
+  /* ---------------------------------------------------------
+   * 6) 입력
+   * --------------------------------------------------------- */
+  const keys = { up: false, down: false, left: false, right: false };
+  const DIR_KEYS = {
+    ArrowUp: 'up', KeyW: 'up',
+    ArrowDown: 'down', KeyS: 'down',
+    ArrowLeft: 'left', KeyA: 'left',
+    ArrowRight: 'right', KeyD: 'right'
   };
-
-  button.addEventListener("pointerup", release);
-  button.addEventListener("pointercancel", release);
-  button.addEventListener("lostpointercapture", release);
-});
-
-document.querySelector(".touch-interact").addEventListener("click", interact);
-
-// 창 포커스를 잃으면 눌린 키 상태 초기화 (캐릭터가 계속 걷는 현상 방지)
-window.addEventListener("blur", () => {
-  for (const k in keys) keys[k] = false;
-});
-
-// 클릭으로도 대화 진행
-window.addEventListener("mousedown", () => {
-  if (dialogueActive) advanceDialogue();
-});
-
-// E 키를 눌렀을 때 대상별 동작
-function interact() {
-  const target = getTarget();
-  if (!target) return;
-
-  switch (target.id) {
-    case "moai":
-      if (save.isSharp) showMessage("이미 날렵한 V라인이다!", 2000);
-      else openCarve();
-      break;
-
-    case "villager":
-      if (save.villageIntroDone) startDialogue(villagerRepeatScript);
-      else startDialogue(villageIntroScript, onVillageIntroEnd);
-      break;
-
-    default:
-      // 상점 / 홍보판 / 부동산: 다음 단계에서 오픈
-      if (target.building) showMessage(target.building.closedMsg, 2200);
-  }
-}
-
-// ===== 8. 대화 시스템 =====
-const tutorialScript = [
-  { speaker: "주인공", text: "할아버지… 세상에 날 혼자 두고 가시면 어떡해요…." },
-  { speaker: "주인공", text: "부모님도 없고, 일자리도 없고… 가진 거라곤 할아버지가 남겨주신 이스터 섬의 땅 한 평뿐이라니." },
-  { speaker: "주인공", text: "음? 휑한 오두막 안에 웬 망치랑 조각 칼이 있지?… 쳇, 줘도 이런 걸 주시고." },
-  { speaker: "관광객", text: "어라? 여기도 모아이 석상이 있네! …어, 실례합니다! 혹시 이 땅 주인분이세요?" },
-  { speaker: "주인공", text: "아, 네… 그런데요?" },
-  { speaker: "관광객", text: "이 석상, 다 좋은데 턱선이 너무 투박하지 않나요? 턱만 좀 뾰족하고 날렵하게 깎으면 대박 날 것 같은데요?" },
-  { speaker: "주인공", text: "어… 마침 망치랑 조각 칼을 줍긴 했는데… 정말 이걸 깎아보라고요?" },
-  { speaker: "관광객", text: "당연하죠! 빨리 깎아봐요!" },
-  { speaker: "주인공", text: "(손에 망치를 쥐며) 에라, 모르겠다. 깎아본다!" },
-];
-
-// 턱 깎기 완료 후 관광객 보상 대화
-const rewardScript = [
-  { speaker: "관광객", text: "와! 세상에… 이 턱선 좀 봐! 진짜 베일 것 같잖아?!" },
-  { speaker: "관광객", text: "이건 예술이에요! 팁으로 100골드 놓고 갑니다!" },
-  { speaker: "주인공", text: "오… 진짜 돈을 주네? 이스터 섬에서 턱만 잘 깎아도 먹고살겠는데?!" },
-];
-
-// 원주민 마을 소개 대화 (처음 말을 걸었을 때)
-const villageIntroScript = [
-  { speaker: "원주민", text: "야호! 오두막에 새로 온 턱 조각가가 자네인가? 반갑네!" },
-  { speaker: "주인공", text: "아, 안녕하세요! 마을이 생각보다 왁자지껄하네요." },
-  { speaker: "원주민", text: "허허, 우리 마을에는 자네한테 필요한 곳이 아주 많다네. 잘 들어보게나!" },
-  { speaker: "원주민", text: "첫째, [도구 상점]! 더 좋은 망치와 조각칼을 사면 턱을 훨씬 날렵하고 빠르게 깎을 수 있지." },
-  { speaker: "원주민", text: "둘째, [홍보판]! 거기에 모아이 턱 자랑 홍보물을 붙이면 소문을 듣고 관광객들이 떼로 몰려온다네." },
-  { speaker: "원주민", text: "셋째, 가장 중요한 [이스터 부동산]!" },
-  { speaker: "주인공", text: "부동산이요?" },
-  { speaker: "원주민", text: "그렇다네! 돈을 모아서 섬의 구역들을 하나씩 '인수'할 수 있지. 구역을 '인수'하면 숨겨진 특이한 모아이 석상도 발굴할 수 있고, 이스터 섬의 진짜 비밀에 다가가게 된다네!" },
-  { speaker: "원주민", text: "열심히 턱을 깎아서 돈을 벌고, 꼭 이스터 섬 전체를 '인수'해 보게나! 기대하겠네!" },
-];
-
-// 소개를 이미 들은 뒤 다시 말을 걸었을 때
-const villagerRepeatScript = [
-  { speaker: "원주민", text: "열심히 턱을 깎아서 돈을 벌게나! [도구 상점], [홍보판], [이스터 부동산]을 잊지 말고!" },
-];
-
-let dialogueScript = [];
-let dialogueOnEnd = null;
-let dialogueActive = false;
-let dialogueIndex = 0;
-let typingTimer = null;
-let typing = false;
-let currentFullText = "";
-const TYPE_SPEED = 35; // 글자당 ms
-
-function startDialogue(script, onEnd) {
-  dialogueScript = script;
-  dialogueOnEnd = onEnd || null;
-  dialogueActive = true;
-  document.body.classList.add("dialogue-open");
-  dialogueIndex = 0;
-  dialogueEl.classList.remove("hidden");
-  showLine();
-}
-
-function showLine() {
-  const line = dialogueScript[dialogueIndex];
-  dlgNameEl.textContent = line.speaker;
-  currentFullText = line.text;
-  dlgTextEl.textContent = "";
-  dlgNextEl.style.visibility = "hidden";
-
-  // 튜토리얼에서 관광객이 처음 말하는 줄부터 맵에 등장
-  if (line.speaker === "관광객") tourist.visible = true;
-
-  // 타자기 효과로 한 글자씩 출력
-  typing = true;
-  let i = 0;
-  clearInterval(typingTimer);
-  typingTimer = setInterval(() => {
-    i++;
-    dlgTextEl.textContent = currentFullText.slice(0, i);
-    if (i >= currentFullText.length) finishTyping();
-  }, TYPE_SPEED);
-}
-
-function finishTyping() {
-  clearInterval(typingTimer);
-  typing = false;
-  dlgTextEl.textContent = currentFullText;
-  dlgNextEl.style.visibility = "visible";
-}
-
-function advanceDialogue() {
-  // 아직 출력 중이면 먼저 전체 문장을 보여줌
-  if (typing) {
-    finishTyping();
-    return;
+  function clearDirKeys() {
+    keys.up = keys.down = keys.left = keys.right = false;
+    document.querySelectorAll('.dp.active').forEach((b) => b.classList.remove('active'));
   }
 
-  dialogueIndex++;
-  if (dialogueIndex >= dialogueScript.length) {
-    endDialogue();
-  } else {
-    showLine();
+  function interact() {
+    if (modal || !nearObj) return;
+    nearObj.action();
   }
-}
 
-function endDialogue() {
-  dialogueActive = false;
-  document.body.classList.remove("dialogue-open");
-  dialogueEl.classList.add("hidden");
-
-  const callback = dialogueOnEnd;
-  dialogueOnEnd = null;
-  if (callback) callback();
-}
-
-// 튜토리얼 대화가 끝났을 때
-function onTutorialEnd() {
-  save.tutorialDone = true;
-  tourist.visible = false; // 관광객은 잠시 자리를 비움 (턱을 깎으면 다시 등장)
-  saveGame();
-}
-
-// 보상 대화가 끝났을 때: +100 골드
-function onRewardEnd() {
-  save.rewardDone = true;
-  save.gold += 100;
-  updateGoldUI(true);
-  showMessage("+100 Gold!", 2500);
-  saveGame();
-
-  tourist.mode = "leaving"; // 관광객은 마을 쪽으로 돌아감
-}
-
-// 원주민 마을 소개 대화가 끝났을 때
-function onVillageIntroEnd() {
-  save.villageIntroDone = true;
-  saveGame();
-  showMessage("이제 마을 건물에 가까이 가 보자!", 3000);
-}
-
-// ===== 9. 턱 깎기 미니게임 =====
-let carveActive = false;     // 팝업이 열려 있는지
-let carveFinishing = false;  // 100% 도달 후 닫히는 중인지
-let carveProgress = 0;       // V라인 완성도 (0~100)
-
-function openCarve() {
-  carveActive = true;
-  document.body.classList.add("carve-open");
-  carveFinishing = false;
-  carveDoneEl.classList.add("hidden");
-  carveModal.classList.remove("hidden");
-  messageEl.textContent = "";
-  messageUntil = 0;
-  renderCarve();
-}
-
-function closeCarve() {
-  carveActive = false;
-  document.body.classList.remove("carve-open");
-  carveModal.classList.add("hidden");
-}
-
-// 게이지와 팝업 속 석상의 턱 모양을 진행도에 맞춰 갱신
-function renderCarve() {
-  gaugeFill.style.width = carveProgress + "%";
-  gaugeText.textContent = carveProgress + "%";
-
-  const p = carveProgress / 100;
-  const cx = 120;                      // 석상 중심 x
-  const topY = 138;                    // 턱이 시작되는 y
-  const wTop = 56;                     // 턱 윗부분 반너비
-  const wBot = 52 * (1 - p) + 5 * p;   // 아랫부분 반너비: 넓음 → 뾰족
-  const botY = 205 + 35 * p;           // 턱 끝: 점점 길어짐
-
-  chinEl.setAttribute(
-    "points",
-    `${cx - wTop},${topY} ${cx + wTop},${topY} ${cx + wBot},${botY} ${cx - wBot},${botY}`
-  );
-}
-
-// 타격 시 튀는 돌 조각
-function spawnChips(clientX, clientY) {
-  const rect = carveStage.getBoundingClientRect();
-  const x = clientX - rect.left;
-  const y = clientY - rect.top;
-
-  for (let i = 0; i < 7; i++) {
-    const chip = document.createElement("div");
-    chip.className = "chip";
-    chip.style.left = x + "px";
-    chip.style.top = y + "px";
-    chip.style.setProperty("--dx", Math.random() * 90 - 45 + "px");
-    chip.style.setProperty("--dy", Math.random() * 70 - 35 + "px");
-    carveStage.appendChild(chip);
-    setTimeout(() => chip.remove(), 550);
-  }
-}
-
-// 팝업 + 화면 전체 흔들림
-function shakeAll() {
-  [carvePanel, canvas].forEach((el) => {
-    const cls = el === canvas ? "shake-screen" : "shake";
-    el.classList.remove(cls);
-    void el.offsetWidth; // 애니메이션 재시작
-    el.classList.add(cls);
+  window.addEventListener('keydown', (e) => {
+    if (modal) {
+      if (e.code === 'Escape') { closeModal(); e.preventDefault(); return; }
+      if (modal.onKey && modal.onKey(e)) e.preventDefault();
+      return;
+    }
+    if (DIR_KEYS[e.code]) { keys[DIR_KEYS[e.code]] = true; e.preventDefault(); return; }
+    if (e.code === 'KeyE' || e.code === 'Space' || e.code === 'Enter') {
+      if (!e.repeat) interact();
+      e.preventDefault();
+    }
   });
-}
+  window.addEventListener('keyup', (e) => {
+    if (DIR_KEYS[e.code]) keys[DIR_KEYS[e.code]] = false;
+    if (modal && (e.code === 'Space' || e.code === 'Enter')) e.preventDefault();
+  });
+  window.addEventListener('blur', clearDirKeys);
 
-// 망치질 한 번
-function hitChin(clientX, clientY) {
-  if (carveFinishing) return;
+  // 터치 방향 버튼
+  document.querySelectorAll('.dp').forEach((b) => {
+    const dir = b.dataset.dir;
+    const on = (e) => { e.preventDefault(); keys[dir] = true; b.classList.add('active'); };
+    const off = (e) => { e.preventDefault(); keys[dir] = false; b.classList.remove('active'); };
+    b.addEventListener('pointerdown', on);
+    b.addEventListener('pointerup', off);
+    b.addEventListener('pointercancel', off);
+    b.addEventListener('pointerleave', off);
+    b.addEventListener('contextmenu', (e) => e.preventDefault());
+  });
 
-  // 위치가 없으면(버튼으로 친 경우) 턱 중앙에서 조각이 튐
-  if (clientX === undefined) {
-    const r = chinEl.getBoundingClientRect();
-    clientX = r.left + r.width / 2;
-    clientY = r.top + r.height / 2;
-  }
+  // 터치 상호작용 버튼
+  $('btn-interact').addEventListener('pointerdown', (e) => { e.preventDefault(); interact(); });
+  $('btn-interact').addEventListener('contextmenu', (e) => e.preventDefault());
 
-  carveProgress = Math.min(100, carveProgress + 7 + Math.floor(Math.random() * 4));
-  shakeAll();
-  spawnChips(clientX, clientY);
-  renderCarve();
+  // 캔버스 탭: 가까이 있는 건물/NPC/석상을 직접 탭하면 상호작용
+  const canvas = $('game');
+  const ctx = canvas.getContext('2d');
+  canvas.addEventListener('pointerdown', (e) => {
+    if (modal) return;
+    const r = canvas.getBoundingClientRect();
+    const lx = (e.clientX - r.left) * (W / r.width);
+    const ly = (e.clientY - r.top) * (H / r.height);
+    const hit = objects.find((o) => o.action &&
+      lx >= o.rect.x - 14 && lx <= o.rect.x + o.rect.w + 14 &&
+      ly >= o.rect.y - (o.type === 'statue' ? 70 : 14) && ly <= o.rect.y + o.rect.h + 14);
+    if (!hit) return;
+    if (hit === nearObj) interact();
+    else showToast('조금 더 가까이 가 보세요!', 1400);
+  });
 
-  if (carveProgress >= 100) finishCarve();
-}
+  $('btn-save').addEventListener('click', manualSave);
+  $('btn-reset').addEventListener('click', confirmReset);
+  $('modal-close').addEventListener('click', closeModal);
+  $('modal').addEventListener('pointerdown', (e) => { if (e.target === $('modal')) closeModal(); });
 
-function finishCarve() {
-  carveFinishing = true;
-  carveDoneEl.classList.remove("hidden"); // "날렵한 V라인 완성!"
+  window.addEventListener('beforeunload', saveGame);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) saveGame(); });
 
-  setTimeout(() => {
-    closeCarve();
-    save.isSharp = true; // 이제부터 맵의 석상이 V라인으로 그려짐
-    saveGame();
-    showMessage("날렵한 V라인 완성!", 2500);
-
-    // 잠시 후 관광객이 등장
-    setTimeout(startTouristVisit, 1500);
-  }, 1500);
-}
-
-chinEl.addEventListener("click", (e) => hitChin(e.clientX, e.clientY));
-carveBtn.addEventListener("click", () => {
-  carveBtn.blur(); // Space/Enter로 다시 눌리는 것 방지
-  hitChin();
-});
-carveClose.addEventListener("click", () => {
-  carveClose.blur();
-  if (!carveFinishing) closeCarve();
-});
-
-// ===== 10. 관광객 보상 스토리 =====
-// 마을 쪽 울타리 통로에서 등장해 석상 앞까지 걸어옴
-function startTouristVisit() {
-  if (save.rewardDone) return;
-  tourist.x = fenceX + 30;
-  tourist.y = gateY;
-  tourist.visible = true;
-  tourist.mode = "arriving";
-}
-
-function updateTourist(dt) {
-  if (!tourist.visible || !tourist.mode) return;
-
-  const arriving = tourist.mode === "arriving";
-  const tx = arriving ? moai.x + 85 : fenceX + 30;
-  const ty = arriving ? moai.y + 14 : gateY;
-
-  const dx = tx - tourist.x;
-  const dy = ty - tourist.y;
-  const dist = Math.hypot(dx, dy);
-  const step = tourist.speed * dt;
-
-  if (dist <= step) {
-    // 도착
-    tourist.x = tx;
-    tourist.y = ty;
-    tourist.mode = null;
-
-    if (arriving) {
-      startDialogue(rewardScript, onRewardEnd);
-    } else {
-      tourist.visible = false;
-    }
-  } else {
-    tourist.x += (dx / dist) * step;
-    tourist.y += (dy / dist) * step;
-  }
-}
-
-// ===== 11. 유틸 함수 =====
-function hitsRect(px, py, r) {
-  return (
-    px + player.rx > r.x &&
-    px - player.rx < r.x + r.w &&
-    py + player.ry > r.y &&
-    py - player.ry < r.y + r.h
-  );
-}
-
-function collides(px, py) {
-  return obstacles.some((r) => hitsRect(px, py, r));
-}
-
-// 바다 해안선의 x좌표 (파도에 따라 일렁임)
-function shoreX(y, t) {
-  return seaStart + Math.sin(y * 0.02 + t * 2) * 8 + Math.sin(y * 0.05 - t * 1.3) * 4;
-}
-
-// ===== 12. 업데이트 =====
-function update(dt) {
-  // 시간이 지난 메시지 지우기
-  if (messageUntil && performance.now() > messageUntil) {
-    messageEl.textContent = "";
-    messageUntil = 0;
-  }
-
-  updateTourist(dt);
-
-  // 대화 중이거나 팝업이 열려 있으면 이동 불가
-  if (!dialogueActive && !carveActive) {
-    let dx = 0;
-    let dy = 0;
-
-    if (keys["ArrowLeft"] || keys["KeyA"]) dx -= 1;
-    if (keys["ArrowRight"] || keys["KeyD"]) dx += 1;
-    if (keys["ArrowUp"] || keys["KeyW"]) dy -= 1;
-    if (keys["ArrowDown"] || keys["KeyS"]) dy += 1;
-
-    if (dx !== 0 && dy !== 0) {
-      dx *= Math.SQRT1_2;
-      dy *= Math.SQRT1_2;
-    }
-
-    const nextX = player.x + dx * player.speed * dt;
-    if (!collides(nextX, player.y)) player.x = nextX;
-
-    const nextY = player.y + dy * player.speed * dt;
-    if (!collides(player.x, nextY)) player.y = nextY;
-
-    // 맵 경계(화면 + 해안선) 밖으로 나가지 않게 제한
-    clampPlayer();
-    checkArea();
-  }
-
-  updateCamera(dt, false);
-}
-
-// ===== 13. 그리기 =====
-// 글자 가장자리에 검은 테두리를 둘러 모래색 배경에서도 읽기 쉽게 함
-function drawLabel(text, x, y, size = 13) {
-  ctx.font = `${size}px sans-serif`;
-  ctx.textAlign = "center";
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = "rgba(0, 0, 0, 0.65)";
-  ctx.strokeText(text, x, y);
-  ctx.fillStyle = "#fff";
-  ctx.fillText(text, x, y);
-}
-
-function drawGround(camDrawX) {
-  const W = canvas.width;
-  const H = canvas.height;
-
-  // 모래 바닥 (화면에 보이는 부분 전체 채움)
-  ctx.fillStyle = "#e2c98f";
-  ctx.fillRect(camDrawX, 0, W + 1, H);
-
-  ctx.fillStyle = "rgba(150, 120, 60, 0.28)";
-  for (const s of speckles) {
-    if (s.x > camDrawX - 8 && s.x < camDrawX + W + 8) ctx.fillRect(s.x, s.y, s.s, s.s);
-  }
-}
-
-// 마을 바닥(살짝 다른 톤) + 흙길
-function drawVillageGround() {
-  const H = canvas.height;
-  const [shop, , estate] = buildings;
-
-  ctx.fillStyle = "rgba(190, 150, 80, 0.14)";
-  ctx.fillRect(fenceX, 0, seaStart - fenceX, H);
-
-  // 흙길
-  ctx.fillStyle = "#d2b57c";
-  // 울타리 통로 → 마을 중앙
-  ctx.fillRect(fenceX - 70, gateY - 34, villager.x - (fenceX - 70), 68);
-  // 마을 중앙 → 건물 앞
-  const rowY = H * 0.1 + 128;
-  ctx.fillRect(villager.x - 28, rowY, 56, villager.y - rowY);
-  // 건물 앞 가로 길
-  ctx.fillRect(shop.x + shop.w / 2, rowY, estate.x + estate.w / 2 - (shop.x + shop.w / 2), 36);
-}
-
-function drawSea(t) {
-  const H = canvas.height;
-
-  // 젖은 모래 띠 (해안선 안쪽)
-  ctx.fillStyle = "#c9ab6c";
-  ctx.beginPath();
-  ctx.moveTo(worldW, 0);
-  for (let y = 0; y <= H; y += 8) ctx.lineTo(shoreX(y, t) - 22, y);
-  ctx.lineTo(worldW, H);
-  ctx.closePath();
-  ctx.fill();
-
-  // 바다 본체
-  const grad = ctx.createLinearGradient(seaStart, 0, worldW, 0);
-  grad.addColorStop(0, "#4fc3e8");
-  grad.addColorStop(1, "#1565b8");
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.moveTo(worldW, 0);
-  for (let y = 0; y <= H; y += 8) ctx.lineTo(shoreX(y, t), y);
-  ctx.lineTo(worldW, H);
-  ctx.closePath();
-  ctx.fill();
-
-  // 흰 거품 해안선
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  for (let y = 0; y <= H; y += 8) {
-    const x = shoreX(y, t);
-    if (y === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
-
-  // 바다 안쪽의 물결 줄무늬
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
-  ctx.lineWidth = 2;
-  const seaW = worldW - seaStart;
-  for (let row = 0; row < 14; row++) {
-    const baseY = (row / 14) * H + ((t * 20) % (H / 14));
+  /* ---------------------------------------------------------
+   * 7) 렌더링 & 루프
+   * --------------------------------------------------------- */
+  function rrect(x, y, w, h, r) {
     ctx.beginPath();
-    for (let x = 0; x <= seaW - 20; x += 6) {
-      const px = seaStart + 30 + x;
-      const py = baseY + Math.sin(x * 0.08 + t * 2 + row) * 4;
-      if (x === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
-    }
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+  function emoji(ch, x, y, size, alpha = 1) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.font = `${size}px ${EMOJI_FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(ch, x, y);
+    ctx.restore();
+  }
+  function plate(text, x, y, opts = {}) {
+    const size = opts.size || 12;
+    ctx.save();
+    ctx.font = `bold ${size}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const w = ctx.measureText(text).width + 14;
+    ctx.fillStyle = opts.bg || 'rgba(35,22,10,0.78)';
+    rrect(x - w / 2, y - size / 2 - 4, w, size + 8, 8);
+    ctx.fill();
+    ctx.fillStyle = opts.fg || '#fff';
+    ctx.fillText(text, x, y);
+    ctx.restore();
+  }
+  function ellipse(x, y, rx, ry, fill) {
+    ctx.beginPath();
+    ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
+
+  // ----- 오브젝트 그리기 -----
+  function drawBuildingObj(o) {
+    const r = o.rect;
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.18)';
+    rrect(r.x + 4, r.y + 6, r.w, r.h, 12);
+    ctx.fill();
+    ctx.fillStyle = o.color;
+    rrect(r.x, r.y, r.w, r.h, 12);
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = o.stroke;
     ctx.stroke();
+    ctx.restore();
+    emoji(o.emoji, r.x + r.w / 2, r.y + r.h / 2 - 2, o.size);
+    plate(o.label, r.x + r.w / 2, r.y + r.h + 13);
   }
-}
-
-// 마당과 마을 사이의 울타리 + 통로 표지판
-function drawFence() {
-  const H = canvas.height;
-
-  // 가로대
-  ctx.fillStyle = "#7a5230";
-  ctx.fillRect(fenceX - 4, 0, 8, gateTop);
-  ctx.fillRect(fenceX - 4, gateBottom, 8, H - gateBottom);
-
-  // 기둥
-  ctx.fillStyle = "#5b3a1c";
-  for (let y = 0; y < H; y += 40) {
-    if (y + 20 > gateTop && y < gateBottom) continue; // 통로 부분은 비움
-    ctx.fillRect(fenceX - 8, y, 16, 22);
+  function drawNpcObj(o, t) {
+    const r = o.rect;
+    const cx = r.x + r.w / 2;
+    ellipse(cx, r.y + r.h, 14, 5, 'rgba(0,0,0,0.2)');
+    emoji(o.emoji, cx, r.y + 8 + Math.sin(t / 400) * 1.5, o.size);
+    plate(o.label, cx, r.y + r.h + 14, { size: 11 });
   }
-
-  // 통로 양쪽 문기둥
-  ctx.fillStyle = "#4a2f16";
-  ctx.fillRect(fenceX - 10, gateTop - 8, 20, 16);
-  ctx.fillRect(fenceX - 10, gateBottom - 8, 20, 16);
-
-  // 표지판
-  const signW = 120;
-  const signH = 26;
-  const sx = fenceX - signW / 2;
-  const sy = gateTop - 40;
-  ctx.fillStyle = "#c9a46a";
-  ctx.fillRect(sx, sy, signW, signH);
-  ctx.strokeStyle = "#4e3016";
-  ctx.lineWidth = 3;
-  ctx.strokeRect(sx, sy, signW, signH);
-  ctx.fillStyle = "#3b2410";
-  ctx.font = "bold 13px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText("원주민 마을 ▶", fenceX, sy + 18);
-}
-
-function drawHut() {
-  ctx.fillStyle = "#8b5a2b";
-  ctx.fillRect(hut.x, hut.y, hut.w, hut.h);
-  ctx.strokeStyle = "#4e3016";
-  ctx.lineWidth = 4;
-  ctx.strokeRect(hut.x, hut.y, hut.w, hut.h);
-  ctx.fillStyle = "#4e3016";
-  ctx.fillRect(hut.x + hut.w / 2 - 14, hut.y + hut.h - 40, 28, 40);
-
-  drawLabel("낡은 오두막", hut.x + hut.w / 2, hut.y - 8);
-}
-
-// ----- 마을 건물 -----
-function drawShop(b) {
-  // 벽
-  ctx.fillStyle = "#a47148";
-  ctx.fillRect(b.x, b.y, b.w, b.h);
-  ctx.strokeStyle = "#4e3016";
-  ctx.lineWidth = 4;
-  ctx.strokeRect(b.x, b.y, b.w, b.h);
-
-  // 줄무늬 차양
-  const stripes = 6;
-  const sw = b.w / stripes;
-  for (let i = 0; i < stripes; i++) {
-    ctx.fillStyle = i % 2 === 0 ? "#d9534f" : "#ffffff";
-    ctx.fillRect(b.x + i * sw, b.y, sw, 24);
+  function drawBottleObj(o, t) {
+    const r = o.rect;
+    emoji(o.emoji, r.x + r.w / 2, r.y + r.h / 2 + Math.sin(t / 500) * 4, o.size, state.flags.bottle ? 0.45 : 1);
   }
-  ctx.strokeRect(b.x, b.y, b.w, 24);
-
-  // 문 + 망치 아이콘
-  ctx.fillStyle = "#4e3016";
-  ctx.fillRect(b.x + b.w / 2 - 14, b.y + b.h - 42, 28, 42);
-  ctx.font = "24px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText("🔨", b.x + 32, b.y + 68);
-
-  drawLabel(b.name, b.x + b.w / 2, b.y - 8);
-}
-
-function drawBoard(b) {
-  const boardH = b.h - 26;
-
-  // 다리(기둥)
-  ctx.fillStyle = "#5b3a1c";
-  ctx.fillRect(b.x + 14, b.y + boardH, 9, 26);
-  ctx.fillRect(b.x + b.w - 23, b.y + boardH, 9, 26);
-
-  // 판
-  ctx.fillStyle = "#c9a46a";
-  ctx.fillRect(b.x, b.y, b.w, boardH);
-  ctx.strokeStyle = "#4e3016";
-  ctx.lineWidth = 4;
-  ctx.strokeRect(b.x, b.y, b.w, boardH);
-
-  // 붙어 있는 홍보물 (빈 종이들)
-  const papers = [
-    { dx: 10, dy: 10, w: 28, h: 22, c: "#ffffff" },
-    { dx: 46, dy: 8, w: 24, h: 28, c: "#fff2a8" },
-    { dx: 78, dy: 12, w: 22, h: 20, c: "#ffd1dc" },
-    { dx: 18, dy: 38, w: 30, h: 18, c: "#cfe8ff" },
-    { dx: 58, dy: 40, w: 26, h: 16, c: "#ffffff" },
-  ];
-  for (const p of papers) {
-    ctx.fillStyle = p.c;
-    ctx.fillRect(b.x + p.dx, b.y + p.dy, p.w, p.h);
-    ctx.fillStyle = "#d9534f"; // 압정
-    ctx.fillRect(b.x + p.dx + p.w / 2 - 2, b.y + p.dy + 1, 4, 4);
+  function drawStatueObj(o, t) {
+    const d = STATUES[o.sid];
+    const st = state.statues[o.sid];
+    const { cx, cy } = o;
+    ellipse(cx, cy + 34, 30, 8, 'rgba(0,0,0,0.22)');
+    if (d.style === 'double') ellipse(cx, cy + 24, 15, 9, '#8d8d86');
+    emoji('🗿', cx, cy, 66);
+    if (d.style === 'sunglasses') emoji('🕶️', cx, cy - 6, 30);
+    // 깎기 진행도 막대
+    const bw = 56;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    rrect(cx - bw / 2, cy - 50, bw, 8, 4);
+    ctx.fill();
+    if (st.progress > 0) {
+      ctx.fillStyle = '#ffc13d';
+      rrect(cx - bw / 2, cy - 50, bw * (st.progress / 100), 8, 4);
+      ctx.fill();
+    }
+    plate(d.name, cx, cy + 50, { size: 11 });
   }
 
-  drawLabel(b.name, b.x + b.w / 2, b.y - 8);
-}
-
-function drawEstate(b) {
-  // 벽
-  ctx.fillStyle = "#7a93b5";
-  ctx.fillRect(b.x, b.y, b.w, b.h);
-  ctx.strokeStyle = "#2f3f58";
-  ctx.lineWidth = 4;
-  ctx.strokeRect(b.x, b.y, b.w, b.h);
-
-  // 지붕 띠
-  ctx.fillStyle = "#3b4a63";
-  ctx.fillRect(b.x, b.y, b.w, 28);
-  ctx.strokeRect(b.x, b.y, b.w, 28);
-
-  // 창문 2개
-  ctx.fillStyle = "#cfe8ff";
-  ctx.fillRect(b.x + 18, b.y + 44, 32, 28);
-  ctx.fillRect(b.x + b.w - 50, b.y + 44, 32, 28);
-  ctx.strokeStyle = "#2f3f58";
-  ctx.lineWidth = 3;
-  ctx.strokeRect(b.x + 18, b.y + 44, 32, 28);
-  ctx.strokeRect(b.x + b.w - 50, b.y + 44, 32, 28);
-
-  // 문
-  ctx.fillStyle = "#2f3f58";
-  ctx.fillRect(b.x + b.w / 2 - 15, b.y + b.h - 44, 30, 44);
-
-  // 지붕 위 '땅' 표지
-  ctx.fillStyle = "#ffd54a";
-  ctx.font = "bold 14px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText("★ 땅 ★", b.x + b.w / 2, b.y + 19);
-
-  drawLabel(b.name, b.x + b.w / 2, b.y - 8);
-}
-
-function drawBuildings() {
-  for (const b of buildings) {
-    if (b.id === "shop") drawShop(b);
-    else if (b.id === "board") drawBoard(b);
-    else if (b.id === "estate") drawEstate(b);
+  // ----- 배경 -----
+  function drawWaves(y0, y1, t, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    for (let y = y0; y < y1; y += 22) {
+      ctx.beginPath();
+      for (let x = 0; x <= W; x += 16) {
+        const yy = y + Math.sin((x + t / 14 + y * 3) / 28) * 3;
+        if (x === 0) ctx.moveTo(x, yy); else ctx.lineTo(x, yy);
+      }
+      ctx.stroke();
+    }
   }
-}
 
-// 석상 발밑 그림자 (두 모양 공통)
-function drawMoaiShadow() {
-  ctx.fillStyle = "rgba(0, 0, 0, 0.2)";
-  ctx.beginPath();
-  ctx.ellipse(moai.x, moai.y, moai.w * 0.7, 10, 0, 0, Math.PI * 2);
-  ctx.fill();
-}
+  const PALMS_VILLAGE = [[262, 196], [560, 230], [722, 424], [96, 440], [640, 340]];
+  const PALMS_COAST = [[90, 190], [700, 190], [420, 200], [120, 440], [690, 430]];
 
-// 턱 깎기 전: 투박한 네모 턱의 모아이
-function drawMoai() {
-  const left = moai.x - moai.w / 2;
-  const top = moai.y - moai.h;
-
-  drawMoaiShadow();
-
-  ctx.fillStyle = "#8d8d8d";
-  ctx.fillRect(left, top, moai.w, moai.h);
-  ctx.fillRect(left - 4, top, moai.w + 8, 40);
-
-  ctx.fillStyle = "#5f5f5f";
-  ctx.fillRect(left, top + 14, moai.w, 8);
-
-  ctx.fillStyle = "#757575";
-  ctx.fillRect(moai.x - 5, top + 20, 10, 26);
-
-  ctx.fillStyle = "#4a4a4a";
-  ctx.fillRect(moai.x - 14, top + 56, 28, 4);
-
-  ctx.fillStyle = "#9a9a9a";
-  ctx.fillRect(moai.x - 16, top + 62, 32, 34);
-
-  ctx.strokeStyle = "#444";
-  ctx.lineWidth = 3;
-  ctx.strokeRect(left, top, moai.w, moai.h);
-}
-
-// 턱 깎은 후: 뾰족하고 날렵한 V라인 모아이
-function drawMoaiV() {
-  const left = moai.x - moai.w / 2;
-  const right = moai.x + moai.w / 2;
-  const top = moai.y - moai.h;
-
-  drawMoaiShadow();
-
-  // 몸통
-  ctx.fillStyle = "#7b7b7b";
-  ctx.fillRect(left, top + 60, moai.w, moai.h - 60);
-  ctx.strokeStyle = "#444";
-  ctx.lineWidth = 3;
-  ctx.strokeRect(left, top + 60, moai.w, moai.h - 60);
-
-  // 머리: 아래로 갈수록 좁아지는 V자 턱
-  ctx.fillStyle = "#a8a8a8";
-  ctx.beginPath();
-  ctx.moveTo(left - 4, top);
-  ctx.lineTo(right + 4, top);
-  ctx.lineTo(right + 4, top + 42);
-  ctx.lineTo(moai.x + 5, top + 96);
-  ctx.lineTo(moai.x - 5, top + 96);
-  ctx.lineTo(left - 4, top + 42);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-
-  // 눈썹 그늘 / 코 / 입
-  ctx.fillStyle = "#5f5f5f";
-  ctx.fillRect(left - 4 + 2, top + 14, moai.w + 4, 8);
-  ctx.fillStyle = "#757575";
-  ctx.fillRect(moai.x - 5, top + 20, 10, 26);
-  ctx.fillStyle = "#4a4a4a";
-  ctx.fillRect(moai.x - 12, top + 58, 24, 4);
-
-  // 반짝이는 효과
-  const a = 0.4 + 0.6 * ((Math.sin(animT * 5) + 1) / 2);
-  const sx = right + 16;
-  const sy = top + 34;
-  ctx.fillStyle = `rgba(255, 235, 120, ${a})`;
-  ctx.fillRect(sx - 1, sy - 8, 3, 16);
-  ctx.fillRect(sx - 8, sy - 1, 16, 3);
-}
-
-// 타원형 캐릭터 공통 그리기
-function drawBlob(c, color, outline) {
-  ctx.fillStyle = "rgba(0, 0, 0, 0.2)";
-  ctx.beginPath();
-  ctx.ellipse(c.x, c.y + c.ry - 2, c.rx, 5, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.ellipse(c.x, c.y, c.rx, c.ry, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = outline;
-  ctx.lineWidth = 2;
-  ctx.stroke();
-}
-
-function drawPlayer() {
-  drawBlob(player, "#2f6fed", "#173f94"); // 파란 주인공
-}
-
-function drawTourist() {
-  drawBlob(tourist, "#ff8a3d", "#a34a10"); // 주황색 관광객
-}
-
-function drawVillager() {
-  drawBlob(villager, "#6fa83a", "#3d6a1a"); // 초록색 원주민
-
-  // 머리 깃털 장식
-  const hx = villager.x;
-  const hy = villager.y - villager.ry;
-  ctx.fillStyle = "#e53935";
-  ctx.fillRect(hx - 7, hy - 8, 4, 10);
-  ctx.fillStyle = "#ffd54a";
-  ctx.fillRect(hx - 2, hy - 11, 4, 13);
-  ctx.fillStyle = "#1e88e5";
-  ctx.fillRect(hx + 3, hy - 8, 4, 10);
-
-  drawLabel("원주민", villager.x, villager.y + villager.ry + 16, 12);
-}
-
-function roundedRectPath(x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
-
-// 상호작용 안내 말풍선
-function drawPrompt(target, camDrawX) {
-  const text = target.label;
-  ctx.font = "bold 16px sans-serif";
-  const padding = 12;
-  const boxW = ctx.measureText(text).width + padding * 2;
-  const boxH = 32;
-
-  let boxX = target.x - boxW / 2;
-  boxX = Math.max(camDrawX + 4, Math.min(camDrawX + canvas.width - boxW - 4, boxX)); // 화면 밖으로 안 나가게
-  const boxY = target.below ? target.y + 8 : Math.max(4, target.y - boxH - 14);
-
-  roundedRectPath(boxX, boxY, boxW, boxH, 8);
-  ctx.fillStyle = "rgba(20, 20, 20, 0.85)";
-  ctx.fill();
-  ctx.strokeStyle = "#ffd54a";
-  ctx.lineWidth = 2;
-  ctx.stroke();
-
-  ctx.fillStyle = "#ffd54a";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(text, boxX + boxW / 2, boxY + boxH / 2);
-  ctx.textBaseline = "alphabetic";
-}
-
-function draw(t) {
-  animT = t;
-  const camDrawX = Math.round(camX);
-
-  ctx.save();
-  ctx.translate(-camDrawX, 0); // 이후는 모두 '맵 좌표'로 그림
-
-  drawGround(camDrawX);
-  drawVillageGround();
-  drawSea(t);
-  drawFence();
-  drawHut();
-  drawBuildings();
-
-  // y(발밑) 기준으로 정렬해서 아래쪽에 있는 것이 위에 그려지게 함
-  const list = [
-    { y: moai.y, fn: save.isSharp ? drawMoaiV : drawMoai },
-    { y: player.y + player.ry, fn: drawPlayer },
-    { y: villager.y + villager.ry, fn: drawVillager },
-  ];
-  if (tourist.visible) list.push({ y: tourist.y + tourist.ry, fn: drawTourist });
-  list.sort((a, b) => a.y - b.y);
-  list.forEach((o) => o.fn());
-
-  // 상호작용 안내
-  const target = getTarget();
-  if (target && target.label) drawPrompt(target, camDrawX);
-
-  ctx.restore();
-}
-
-// ===== 14. 게임 루프 =====
-let lastTime = performance.now();
-
-function loop(now) {
-  const dt = Math.min((now - lastTime) / 1000, 0.05);
-  lastTime = now;
-
-  update(dt);
-  draw(now / 1000);
-  requestAnimationFrame(loop);
-}
-
-// ===== 15. 리셋 버튼 =====
-// 버튼을 눌러도 대화가 넘어가지 않도록 클릭 전파를 막음
-resetBtn.addEventListener("mousedown", (e) => e.stopPropagation());
-
-resetBtn.addEventListener("click", () => {
-  resetBtn.blur(); // 포커스가 남아 Space/Enter로 다시 눌리는 것 방지
-
-  if (!confirm("저장된 데이터를 모두 삭제하고 처음부터 다시 시작할까요?")) return;
-
-  resetting = true; // 새로고침 직전의 자동 저장이 데이터를 되살리지 못하게 막음
-  try {
-    localStorage.removeItem(SAVE_KEY); // 이 게임의 저장 데이터만 삭제
-  } catch (err) {
-    console.warn("저장 데이터를 삭제하지 못했습니다:", err);
+  function drawVillageBG(t) {
+    ctx.fillStyle = '#ead7a1';
+    ctx.fillRect(0, 0, W, H);
+    [[120, 420, 70], [560, 390, 90], [700, 260, 60], [320, 200, 50]].forEach(([x, y, r]) => {
+      ctx.globalAlpha = 0.6;
+      ellipse(x, y, r, r * 0.55, '#c9d98a');
+      ctx.globalAlpha = 1;
+    });
+    // 흙길
+    ctx.fillStyle = '#d9bf84';
+    ctx.fillRect(0, 168, W - 20, 36);
+    // 오두막 마당 울타리
+    ctx.save();
+    ctx.fillStyle = 'rgba(180,140,80,0.22)';
+    rrect(16, 26, 214, 360, 12);
+    ctx.fill();
+    ctx.setLineDash([10, 7]);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#8a5a2b';
+    ctx.stroke();
+    ctx.restore();
+    plate('오두막 마당', 123, 372, { size: 11, bg: 'rgba(110,70,30,0.8)' });
+    // 바다/선착장
+    const g = ctx.createLinearGradient(0, H - 30, 0, H);
+    g.addColorStop(0, '#59b8e0');
+    g.addColorStop(1, '#2d86c0');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, H - 30, W, 30);
+    drawWaves(H - 28, H, t, 'rgba(255,255,255,0.45)');
+    ctx.fillStyle = '#8b5a2b';
+    ctx.fillRect(300, H - 34, 200, 34);
+    ctx.strokeStyle = '#5c3a18';
+    ctx.lineWidth = 2;
+    for (let x = 310; x < 500; x += 20) { ctx.beginPath(); ctx.moveTo(x, H - 34); ctx.lineTo(x, H); ctx.stroke(); }
+    plate('⛵ 바다로', 400, H - 46, { size: 11 });
+    // 야자수
+    PALMS_VILLAGE.forEach(([x, y]) => emoji('🌴', x, y, 46));
+    // 동쪽 문: 인수 전 / 후
+    if (!state.zones.coast) {
+      ctx.strokeStyle = '#7a4b1e';
+      ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.moveTo(W - 26, 250); ctx.lineTo(W - 26, 430); ctx.stroke();
+      for (let y = 250; y <= 430; y += 36) { ctx.beginPath(); ctx.moveTo(W - 34, y); ctx.lineTo(W - 18, y); ctx.stroke(); }
+      emoji('🪧', W - 64, 320, 34);
+      plate('매물', W - 64, 352, { size: 11, bg: 'rgba(140,60,40,0.85)' });
+    } else {
+      ctx.fillStyle = '#d4b574';
+      ctx.fillRect(W - 90, 300, 90, 70);
+      emoji('➡️', W - 46 + Math.sin(t / 250) * 4, 335, 30);
+      plate('해안가 구역', W - 56, 384, { size: 11, bg: 'rgba(30,110,140,0.85)' });
+    }
   }
-  location.reload(); // 초기 상태(튜토리얼)부터 다시 시작
-});
 
-// ===== 16. 자동 저장 =====
-// 위치는 계속 바뀌므로 주기적으로 + 탭을 닫거나 숨길 때 저장
-setInterval(saveGame, 3000);
-window.addEventListener("beforeunload", saveGame);
-window.addEventListener("pagehide", saveGame);
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") saveGame();
-});
+  function drawSeaBG(t) {
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#3aa6dd');
+    g.addColorStop(1, '#0c4a86');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    drawWaves(30, H, t, 'rgba(255,255,255,0.22)');
+    // 위쪽 모래 띠 + 선착장
+    ctx.fillStyle = '#ead7a1';
+    ctx.fillRect(0, 0, W, 14);
+    ctx.fillStyle = '#8b5a2b';
+    ctx.fillRect(300, 0, 200, 24);
+    plate('🏝 마을 선착장', 400, 40, { size: 11 });
+    emoji('🏝️', 120, 360, 64);
+    emoji('🐋', ((t / 40) % (W + 200)) - 100, 420, 48);
+    emoji('🐟', 700 - ((t / 30) % 400), 200, 26);
+    emoji('🐟', 250 + ((t / 50) % 300), 140, 22);
+  }
 
-// ===== 17. 시작 =====
-window.addEventListener("resize", layout);
-window.addEventListener("orientationchange", layout);
-window.visualViewport?.addEventListener("resize", layout);
-layout();
-updateGoldUI();
+  function drawCoastBG(t) {
+    const g = ctx.createLinearGradient(0, 0, 0, 140);
+    g.addColorStop(0, '#2f9fcf');
+    g.addColorStop(1, '#6fd0e0');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, 140);
+    drawWaves(10, 140, t, 'rgba(255,255,255,0.35)');
+    ctx.fillStyle = '#f2e1b0';
+    ctx.beginPath();
+    ctx.moveTo(0, 130);
+    for (let x = 0; x <= W; x += 20) ctx.lineTo(x, 130 + Math.sin((x + t / 20) / 40) * 5);
+    ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#d4b574';
+    ctx.fillRect(0, 300, 90, 70);
+    PALMS_COAST.forEach(([x, y]) => emoji('🌴', x, y, 46));
+    [[200, 400], [380, 440], [610, 380], [480, 180]].forEach(([x, y]) => emoji('🐚', x, y, 22));
+    emoji('🦀', 300 + ((Math.sin(t / 900) + 1) / 2) * 260, 420, 24);
+    plate('해안가 구역', 400, 160, { size: 12, bg: 'rgba(30,110,140,0.85)' });
+    plate('◀ 마을', 52, 392, { size: 11 });
+  }
 
-// 저장된 위치(비율)를 복원. 장애물 안에 끼는 위치면 기본 위치로 대체
-player.x = save.playerPos.x * worldW;
-player.y = save.playerPos.y * canvas.height;
-clampPlayer();
-if (collides(player.x, player.y)) {
-  player.x = DEFAULT_PLAYER_POS.x * worldW;
-  player.y = DEFAULT_PLAYER_POS.y * canvas.height;
-  clampPlayer();
-}
+  function drawPlayer(t) {
+    const baseY = player.y;
+    if (state.map === 'sea') {
+      ellipse(player.x, baseY + 12, 16, 5, 'rgba(0,0,0,0.25)');
+      emoji('⛵', player.x, baseY + Math.sin(t / 300) * 2, 36);
+    } else {
+      ellipse(player.x, baseY + 13, 12, 4, 'rgba(0,0,0,0.25)');
+      emoji('🧑', player.x, baseY, 30);
+    }
+  }
 
-// 현재 위치 표시 + 카메라를 플레이어에게 바로 맞춤
-setArea(player.x > fenceX ? "원주민 마을" : "오두막 마당");
-updateCamera(0, true);
+  function render(t) {
+    ctx.clearRect(0, 0, W, H);
+    if (state.map === 'village') drawVillageBG(t);
+    else if (state.map === 'sea') drawSeaBG(t);
+    else drawCoastBG(t);
 
-ready = true;
+    // 깊이 정렬(발 위치 기준)
+    const list = [];
+    objects.forEach((o) => list.push({ y: o.rect.y + o.rect.h, draw: () => o.draw(o, t) }));
+    tourists.forEach((tr) => list.push({ y: tr.y + 14, draw: () => {
+      ellipse(tr.x, tr.y + 13, 11, 4, 'rgba(0,0,0,0.22)');
+      emoji(tr.emoji, tr.x, tr.y, 28);
+      if (tr.phase === 'photo' && Math.floor(tr.timer * 6) % 2 === 0) emoji('📸', tr.x + 16, tr.y - 18, 18);
+    } }));
+    list.push({ y: player.y + 14, draw: () => drawPlayer(t) });
+    list.sort((a, b) => a.y - b.y).forEach((it) => it.draw());
 
-if (!save.tutorialDone) {
-  // 처음 시작: 튜토리얼 대화
-  startDialogue(tutorialScript, onTutorialEnd);
-} else if (save.isSharp && !save.rewardDone) {
-  // 턱은 깎았지만 보상을 받기 전에 새로고침한 경우: 관광객 다시 등장
-  setTimeout(startTouristVisit, 1000);
-}
+    // 상호작용 안내
+    if (nearObj && !modal) {
+      const r = nearObj.rect;
+      const top = nearObj.type === 'statue' ? nearObj.cy - 70 : r.y - 16;
+      plate(`[E] ${nearObj.prompt}`, r.x + r.w / 2, top, { size: 12, bg: 'rgba(255,178,63,0.95)', fg: '#2a1a08' });
+    }
+    // 떠오르는 골드 텍스트
+    floaters.forEach((f) => {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, f.life);
+      ctx.font = 'bold 16px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ffe27a';
+      ctx.strokeStyle = '#5a3a05';
+      ctx.lineWidth = 3;
+      ctx.strokeText(f.text, f.x, f.y);
+      ctx.fillText(f.text, f.x, f.y);
+      ctx.restore();
+    });
+  }
 
-requestAnimationFrame(loop);
+  // ----- 업데이트 -----
+  function update(dt) {
+    if (toastCooldown > 0) toastCooldown -= dt;
+    if (modal) return;
+
+    let dx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+    let dy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+    if (dx || dy) {
+      const len = Math.hypot(dx, dy);
+      const sp = (state.map === 'sea' ? CFG.boatSpeed : CFG.walkSpeed) * dt;
+      const prevX = player.x;
+      const prevY = player.y;
+      const nx = clamp(player.x + (dx / len) * sp, PR, W - PR);
+      if (!blockedAt(nx, player.y)) player.x = nx;
+      const ny = clamp(player.y + (dy / len) * sp, PR, H - PR);
+      if (!blockedAt(player.x, ny)) player.y = ny;
+      checkExits(prevX, prevY);
+    }
+
+    // 가장 가까운 상호작용 대상
+    nearObj = null;
+    let best = 44;
+    for (const o of objects) {
+      if (!o.action) continue;
+      const d = distToRect(player.x, player.y, o.rect);
+      if (d < best) { best = d; nearObj = o; }
+    }
+    $('btn-interact').classList.toggle('ready', !!nearObj);
+
+    updateTourists(dt);
+  }
+
+  let last = performance.now();
+  let uiAcc = 0;
+  let saveAcc = 0;
+  function frame(ts) {
+    const dt = Math.min(0.05, (ts - last) / 1000);
+    last = ts;
+    update(dt);
+    render(ts);
+
+    uiAcc += dt;
+    if (uiAcc >= 0.5) {
+      uiAcc = 0;
+      updateHUD();
+      if (modal && modal.tick) modal.tick();
+    }
+    saveAcc += dt;
+    if (saveAcc >= 5) { saveAcc = 0; saveGame(); } // 자동 저장
+    requestAnimationFrame(frame);
+  }
+
+  /* ---------------------------------------------------------
+   * 시작
+   * --------------------------------------------------------- */
+  // 저장된 위치가 장애물과 겹치면 안전한 위치로 이동
+  buildObjects();
+  if (blockedAt(player.x, player.y)) {
+    player.x = VILLAGE_SPAWN.x;
+    player.y = VILLAGE_SPAWN.y;
+    if (state.map !== 'village') { state.map = 'village'; buildObjects(); }
+  }
+  updateHUD();
+  requestAnimationFrame(frame);
+  showToast('석상 앞에서 E 키(또는 E 버튼)로 턱을 깎아 골드를 모아 보세요!', 4000);
+})();

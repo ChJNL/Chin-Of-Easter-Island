@@ -2,38 +2,32 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <!-- 모바일: 확대/축소 방지, 노치(안전 영역)까지 화면 사용 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#e2c98f">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="format-detection" content="telephone=no">
   <title>이스터 섬의 턱</title>
   <!-- 한글 도트(픽셀) 폰트: 불러오지 못하면 style.css의 대체 폰트가 사용됩니다 -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/galmuri@latest/dist/galmuri.css">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <!-- 화면 전체를 채우는 게임 캔버스 (크기는 script.js에서 창 크기에 맞춤) -->
+  <!-- 화면 전체를 채우는 게임 캔버스 (크기는 script.js가 화면 크기에 맞춤) -->
   <canvas id="gameCanvas"></canvas>
 
   <!-- 상단 좌측 HUD: 조작 안내 + 현재 위치 + 보유 골드 -->
   <div class="hud">
-    <div>이동: 방향키 / WASD &nbsp;|&nbsp; 상호작용: E</div>
+    <div id="hudHint" class="help">이동: 방향키 / WASD &nbsp;|&nbsp; 상호작용: E</div>
     <div class="area">위치: <span id="areaText">오두막 마당</span></div>
     <div class="gold">보유 골드: <span id="goldText">0</span> G</div>
   </div>
 
-  <!-- 터치 화면용 이동 및 상호작용 컨트롤 -->
-  <div class="touch-controls" aria-label="터치 조작">
-    <div class="touch-pad" aria-label="이동">
-      <button type="button" data-key="ArrowUp" aria-label="위로 이동">▲</button>
-      <button type="button" data-key="ArrowLeft" aria-label="왼쪽으로 이동">◀</button>
-      <span aria-hidden="true"></span>
-      <button type="button" data-key="ArrowRight" aria-label="오른쪽으로 이동">▶</button>
-      <span aria-hidden="true"></span>
-      <button type="button" data-key="ArrowDown" aria-label="아래로 이동">▼</button>
-    </div>
-    <button class="touch-interact" type="button" aria-label="상호작용">E</button>
-  </div>
-
-  <!-- 상단 우측: 리셋 버튼 -->
+  <!-- 상단 우측: 리셋 버튼 + 테스트용 골드 버튼 (테스트 버튼은 script.js 의 DEBUG_TOOLS 가 true 일 때만 보임) -->
   <button id="resetBtn" class="reset-btn" type="button">리셋</button>
+  <button id="testGoldBtn" class="test-btn" type="button">+100G (테스트)</button>
 
   <!-- 알림 메시지 -->
   <div id="message" class="message"></div>
@@ -43,7 +37,7 @@
     <div id="dlgName" class="dlg-name"></div>
     <p id="dlgText" class="dlg-text"></p>
     <span id="dlgNext" class="dlg-next">▼</span>
-    <div class="dlg-hint">클릭 또는 Enter</div>
+    <div id="dlgHint" class="dlg-hint">클릭 또는 Enter</div>
   </div>
 
   <!-- 턱 깎기 미니게임 모달 -->
@@ -79,10 +73,14 @@
       </div>
 
       <!-- 하단: 안내 문구 + 망치질 버튼 -->
-      <p class="carve-guide">마우스로 턱을 클릭해 날렵하게 깎으세요!</p>
+      <p id="carveGuide" class="carve-guide">마우스로 턱을 클릭해 날렵하게 깎으세요!</p>
       <button id="carveBtn" class="carve-btn" type="button">🔨 턱 깎기 (망치질)</button>
     </div>
   </div>
+
+  <!-- 모바일(터치) 조작: 가상 조이스틱 + E 버튼 (터치 기기에서만 표시됨) -->
+  <div id="joystick" class="joystick"><div id="stick" class="stick"></div></div>
+  <button id="actionBtn" class="action-btn" type="button">E</button>
 
   <script src="script.js"></script>
 </body>

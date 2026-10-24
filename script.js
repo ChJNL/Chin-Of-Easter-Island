@@ -1,14 +1,24 @@
 // ============================================================
 // 이스터 섬의 턱 - script.js
+//  Step 6: 3구역 맵(마당 / 마을 / 해안가 비경) + 안개(미해금) + 인수 표지판
+//  + 모바일 지원(가상 조이스틱 / E 버튼 / 화면 대응)
 // ============================================================
 
-// ===== 0. HTML 요소 확인 =====
+// ===== 0. 설정값 (개발/테스트용 스위치) =====
+const ZONE3_PRICE = 500;             // 3구역(해안가 비경 구역) 인수 비용
+const DEDUCT_GOLD_ON_UNLOCK = true;  // true: 인수할 때 골드 차감 / false: 500G 이상이면 차감 없이 해금(테스트)
+const DEBUG_TOOLS = true;            // true: 우측 상단에 '+100G (테스트)' 버튼 표시 (완성 후 false 로)
+const FOG_FADE_SEC = 3;              // 안개가 걷히는 데 걸리는 시간(초)
+const FOG_BLOCK_ALPHA = 0.35;        // 안개가 이 값보다 짙으면 통과할 수 없음
+
+// ===== 1. HTML 요소 확인 =====
 // index.html이 이 script.js와 짝이 맞지 않으면(예전 버전 등) 원인을 화면에 알려줌
 const REQUIRED_IDS = [
-  "gameCanvas", "message", "goldText", "areaText", "resetBtn",
-  "dialogue", "dlgName", "dlgText", "dlgNext",
+  "gameCanvas", "message", "goldText", "areaText", "hudHint", "resetBtn", "testGoldBtn",
+  "dialogue", "dlgName", "dlgText", "dlgNext", "dlgHint",
   "carveModal", "carvePanel", "carveStage", "chinShape",
-  "gaugeFill", "gaugeText", "carveDone", "carveBtn", "carveClose",
+  "gaugeFill", "gaugeText", "carveDone", "carveBtn", "carveClose", "carveGuide",
+  "joystick", "stick", "actionBtn",
 ];
 
 (function checkElements() {
@@ -26,19 +36,22 @@ const REQUIRED_IDS = [
   throw new Error("누락된 HTML 요소: " + missing.join(", "));
 })();
 
-// ===== 1. 기본 설정 =====
+// ===== 2. 기본 설정 =====
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 const messageEl = document.getElementById("message");
 const goldTextEl = document.getElementById("goldText");
 const areaTextEl = document.getElementById("areaText");
+const hudHintEl = document.getElementById("hudHint");
 const resetBtn = document.getElementById("resetBtn");
+const testGoldBtn = document.getElementById("testGoldBtn");
 
 // 대화창 요소
 const dialogueEl = document.getElementById("dialogue");
 const dlgNameEl = document.getElementById("dlgName");
 const dlgTextEl = document.getElementById("dlgText");
 const dlgNextEl = document.getElementById("dlgNext");
+const dlgHintEl = document.getElementById("dlgHint");
 
 // 턱 깎기 모달 요소
 const carveModal = document.getElementById("carveModal");
@@ -50,23 +63,34 @@ const gaugeText = document.getElementById("gaugeText");
 const carveDoneEl = document.getElementById("carveDone");
 const carveBtn = document.getElementById("carveBtn");
 const carveClose = document.getElementById("carveClose");
+const carveGuideEl = document.getElementById("carveGuide");
 
-// ===== 2. 저장 데이터 (LocalStorage) =====
+// 모바일 조작 요소
+const joystickEl = document.getElementById("joystick");
+const stickEl = document.getElementById("stick");
+const actionBtn = document.getElementById("actionBtn");
+
+// ===== 3. 저장 데이터 (LocalStorage) =====
 // 저장 구조:
-//  gold, isSharp(석상 V라인 여부), tutorialDone, rewardDone(관광객 보상 수령),
-//  villageVisited(마을 방문 여부), villageIntroDone(원주민 마을 소개 대화 완료),
+//  version, gold, isSharp(석상 V라인 여부), tutorialDone, rewardDone(관광객 보상 수령),
+//  villageVisited(마을 방문), villageIntroDone(원주민 소개 대화 완료),
+//  unlockedZones({ zone3: 해안가 비경 구역 인수 여부 }),
 //  playerPos(맵 전체 기준 비율 0~1)
 const SAVE_KEY = "easterChinSave";
-const DEFAULT_PLAYER_POS = { x: 0.15, y: 0.75 }; // 오두막 앞 (맵 전체 가로의 15%)
+const SAVE_VERSION = 2;                          // 맵 구조가 바뀌면 올림 (이전 위치 정보 무시)
+const ZONE_KEYS = ["zone3"];
+const DEFAULT_PLAYER_POS = { x: 0.1, y: 0.75 };  // 오두막 앞
 
 function defaultSave() {
   return {
+    version: SAVE_VERSION,
     gold: 0,
     isSharp: false,
     tutorialDone: false,
     rewardDone: false,
     villageVisited: false,
     villageIntroDone: false,
+    unlockedZones: { zone3: false },
     playerPos: { ...DEFAULT_PLAYER_POS },
   };
 }
@@ -87,8 +111,15 @@ function sanitizeSave(raw) {
   data.villageVisited = raw.villageVisited === true;
   data.villageIntroDone = raw.villageIntroDone === true;
 
+  // 구역 해금 정보 (없거나 이상하면 모두 잠금)
+  const z = raw.unlockedZones;
+  if (z && typeof z === "object") {
+    for (const key of ZONE_KEYS) data.unlockedZones[key] = z[key] === true;
+  }
+
+  // 위치는 같은 맵 구조(version)일 때만 복원
   const p = raw.playerPos;
-  if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+  if (raw.version === SAVE_VERSION && p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
     data.playerPos = { x: clamp01(p.x), y: clamp01(p.y) };
   }
   return data;
@@ -119,9 +150,10 @@ let resetting = false;  // 리셋 중에는 저장하지 않음 (새로고침 �
 function saveGame() {
   if (!ready || resetting) return;
   try {
+    save.version = SAVE_VERSION;
     save.playerPos = {
       x: clamp01(player.x / worldW),
-      y: clamp01(player.y / canvas.height),
+      y: clamp01(player.y / worldH),
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(save));
   } catch (err) {
@@ -129,7 +161,11 @@ function saveGame() {
   }
 }
 
-// ===== 3. 게임 오브젝트 =====
+function isZoneUnlocked(id) {
+  return save.unlockedZones[id] === true;
+}
+
+// ===== 4. 게임 오브젝트 =====
 // 주인공 (파란 타원형 도트)
 const player = { x: 0, y: 0, rx: 12, ry: 16, speed: 190 };
 
@@ -138,6 +174,9 @@ const hut = { x: 0, y: 0, w: 150, h: 110 };
 
 // 모아이 석상 (x, y는 발밑 중심 좌표)
 const moai = { x: 0, y: 0, w: 56, h: 110, interactRange: 90 };
+
+// 3구역의 쌍턱 모아이 석상
+const coastMoai = { x: 0, y: 0, w: 56, h: 110, interactRange: 90 };
 
 // 관광객 NPC
 // mode: null(대기) | "arriving"(석상 앞으로 걸어오는 중) | "leaving"(마을 쪽으로 돌아가는 중)
@@ -165,44 +204,94 @@ const buildings = [
   },
 ];
 
+// 3구역 입구 앞 '인수 대기중' 표지판 (판 + 기둥)
+const zoneSign = { x: 0, y: 0, w: 250, h: 34, postX: 0, rect: { x: 0, y: 0, w: 0, h: 0 } };
+
 // 맵 구조 (모두 layout()에서 계산)
-//  [오두막 마당] ──울타리/문(fenceX)── [원주민 마을] ── [바다(seaStart~worldW)]
-let worldW = 0;       // 맵 전체 가로 길이 (화면 가로의 2배)
-let fenceX = 0;       // 마당과 마을의 경계(울타리) x
+//  [1구역 오두막 마당] ─울타리(fenceX)─ [2구역 원주민 마을] ─안개 입구(gateX)─ [3구역 해안가 비경] ─ 바다
+let viewW = 0;        // 화면에 보이는 논리 가로 크기
+let viewH = 0;        // 화면에 보이는 논리 세로 크기
+let zoom = 1;         // 작은 화면에서 맵을 축소하는 배율
+let dpr = 1;          // 화면 선명도(devicePixelRatio, 최대 2)
+let layoutW = 0;      // 맵 배치 기준 가로 (좁은 화면에서도 건물이 겹치지 않게 최소값 보장)
+let worldW = 0;       // 맵 전체 가로 길이 (layoutW의 3배)
+let worldH = 0;       // 맵 전체 세로 길이
+let fenceX = 0;       // 1구역 ↔ 2구역 경계(울타리) x
 let gateY = 0;        // 울타리 통로 중심 y
-let gateTop = 0;      // 통로 위쪽 끝 y
-let gateBottom = 0;   // 통로 아래쪽 끝 y
-let seaStart = 0;     // 바다 시작 x
+let gateTop = 0;
+let gateBottom = 0;
+let gateX = 0;        // 2구역 ↔ 3구역 경계(안개 입구) x
+let gate2Y = 0;       // 안개 입구 중심 y
+let gate2Top = 0;
+let gate2Bottom = 0;
+let seaStart = 0;     // 바다 시작 x (3구역 오른쪽 끝)
 let camX = 0;         // 카메라 x (화면 왼쪽 끝이 가리키는 맵 좌표)
 let speckles = [];    // 모래 질감 점
 let obstacles = [];   // 충돌 사각형
+let fogRect = { x: 0, y: 0, w: 0, h: 0 }; // 안개 입구를 막는 충돌 영역
+let coastDecor = { palms: [], rocks: [], pools: [] };
 let animT = 0;        // 애니메이션용 시간(초)
 let currentArea = ""; // 현재 위치 이름 (HUD 표시용)
 
-// ===== 4. 화면 크기 / 레이아웃 =====
+// 안개 농도 (1: 짙음 → 0: 완전히 걷힘). 인수한 구역은 처음부터 0
+let fogAlpha = isZoneUnlocked("zone3") ? 0 : 1;
+
+function fogBlocks() {
+  return fogAlpha > FOG_BLOCK_ALPHA;
+}
+
+// ===== 5. 화면 크기 / 레이아웃 =====
+const MIN_VIEW_H = 520;    // 논리 화면 최소 높이 (이보다 낮은 화면은 축소해서 보여줌)
+const MIN_LAYOUT_W = 900;  // 맵 배치 기준 최소 가로
+const MAX_DPR = 2;
+
+// 같은 시드면 항상 같은 값을 주는 난수 (화면 크기가 바뀌어도 모래 점이 깜빡이지 않게)
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 function layout() {
   // 창 크기가 바뀌어도 캐릭터가 같은 지점에 머물도록 비율 기억
-  const hadWorld = worldW > 0;
+  const hadWorld = worldW > 0 && worldH > 0;
   const rx = hadWorld ? player.x / worldW : 0;
-  const ry = hadWorld ? player.y / canvas.height : 0;
+  const ry = hadWorld ? player.y / worldH : 0;
 
-  // 캔버스를 창 크기에 맞춰 꽉 채움 (회색 여백 없음)
-  canvas.width = window.visualViewport?.width || window.innerWidth;
-  canvas.height = window.visualViewport?.height || window.innerHeight;
+  // 캔버스를 화면에 꽉 채움 (회색 여백 없음). 낮은 화면은 zoom 으로 축소, 고해상도는 dpr 로 선명하게
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+  zoom = Math.min(1, vh / MIN_VIEW_H);
+  viewW = vw / zoom;
+  viewH = vh / zoom;
+  canvas.width = Math.round(vw * dpr);
+  canvas.height = Math.round(vh * dpr);
 
-  const W = canvas.width;
-  const H = canvas.height;
-
-  worldW = W * 2;          // 맵은 화면 2개 분량 (마당 + 마을)
-  fenceX = W * 0.88;       // 마당 오른쪽 경계
+  const W = Math.max(viewW, MIN_LAYOUT_W);
+  const H = viewH;
+  layoutW = W;
+  worldW = W * 3;           // 맵은 3개 구역 (마당 + 마을 + 해안가)
+  worldH = H;
+  fenceX = W * 0.88;        // 1구역 오른쪽 경계
+  gateX = W * 1.92;         // 2구역 오른쪽 경계 (3구역 입구)
   seaStart = worldW - W * 0.2; // 맵 맨 오른쪽 끝이 바다
 
-  // 울타리 통로
+  // 1구역 ↔ 2구역 울타리 통로
   gateY = H * 0.75;
   gateTop = gateY - 60;
   gateBottom = gateY + 60;
 
-  // 오두막 마당
+  // 2구역 ↔ 3구역 안개 입구
+  gate2Y = H * 0.62;
+  gate2Top = gate2Y - 70;
+  gate2Bottom = gate2Y + 70;
+
+  // ----- 1구역: 오두막 마당 -----
   hut.x = W * 0.08;
   hut.y = H * 0.14;
 
@@ -215,39 +304,82 @@ function layout() {
     tourist.y = moai.y + 12;
   }
 
-  // 원주민 마을
-  const vw = seaStart - fenceX; // 마을 가로 길이
+  // ----- 2구역: 원주민 마을 -----
+  const vilW = gateX - fenceX; // 마을 가로 길이
   const [shop, board, estate] = buildings;
-  shop.x = fenceX + vw * 0.12;
+  shop.x = fenceX + vilW * 0.08;
   shop.y = H * 0.1;
-  board.x = fenceX + vw * 0.43;
+  board.x = fenceX + vilW * 0.35;
   board.y = H * 0.1;
-  estate.x = fenceX + vw * 0.68;
+  estate.x = fenceX + vilW * 0.57;
   estate.y = H * 0.1;
 
-  villager.x = fenceX + vw * 0.5;
+  villager.x = fenceX + vilW * 0.4;
   villager.y = H * 0.55;
 
+  // 안개 입구 앞 표지판 (판은 입구에서 150px 떨어진 기둥 위)
+  zoneSign.postX = gateX - 150;
+  zoneSign.x = zoneSign.postX - zoneSign.w / 2;
+  zoneSign.y = gate2Y - 10 - zoneSign.h;
+  zoneSign.rect = { x: zoneSign.x, y: zoneSign.y, w: zoneSign.w, h: zoneSign.h + 26 };
+
+  // ----- 3구역: 해안가 비경 구역 -----
+  const coastW = seaStart - gateX;
+  coastMoai.x = gateX + coastW * 0.45;
+  coastMoai.y = H * 0.6;
+
+  coastDecor = {
+    palms: [
+      { x: gateX + coastW * 0.15, y: H * 0.3 },
+      { x: gateX + coastW * 0.72, y: H * 0.26 },
+      { x: gateX + coastW * 0.27, y: H * 0.9 },
+      { x: gateX + coastW * 0.8, y: H * 0.88 },
+    ],
+    rocks: [
+      { x: gateX + coastW * 0.1, y: H * 0.62, r: 15 },
+      { x: gateX + coastW * 0.18, y: H * 0.7, r: 10 },
+      { x: gateX + coastW * 0.6, y: H * 0.78, r: 14 },
+      { x: gateX + coastW * 0.88, y: H * 0.45, r: 17 },
+      { x: gateX + coastW * 0.4, y: H * 0.18, r: 12 },
+    ],
+    pools: [
+      { x: gateX + coastW * 0.64, y: H * 0.5, rx: 46, ry: 18 },
+      { x: gateX + coastW * 0.3, y: H * 0.74, rx: 38, ry: 14 },
+    ],
+  };
+
+  // ----- 충돌 -----
   obstacles = [
     // 오두막, 모아이
     { x: hut.x, y: hut.y, w: hut.w, h: hut.h },
     { x: moai.x - moai.w / 2, y: moai.y - moai.h, w: moai.w, h: moai.h },
-    // 울타리 (통로 부분만 비어 있음)
+    // 1↔2구역 울타리 (통로 부분만 비어 있음)
     { x: fenceX - 6, y: 0, w: 12, h: gateTop },
     { x: fenceX - 6, y: gateBottom, w: 12, h: H - gateBottom },
+    // 2↔3구역 울타리 (안개 입구 부분만 비어 있고, 그 틈은 fogRect 가 막음)
+    { x: gateX - 6, y: 0, w: 12, h: gate2Top },
+    { x: gateX - 6, y: gate2Bottom, w: 12, h: H - gate2Bottom },
     // 원주민
     { x: villager.x - 14, y: villager.y - villager.ry, w: 28, h: villager.ry * 2 },
+    // 인수 표지판 기둥
+    { x: zoneSign.postX - 9, y: gate2Y - 10, w: 18, h: 26 },
+    // 쌍턱 모아이
+    { x: coastMoai.x - coastMoai.w / 2, y: coastMoai.y - coastMoai.h, w: coastMoai.w, h: coastMoai.h },
   ];
   buildings.forEach((b) => obstacles.push({ x: b.x, y: b.y, w: b.w, h: b.h }));
 
-  // 모래 점 (바다 영역 제외)
+  // 안개가 짙은 동안 입구를 막는 영역 (캐릭터가 뚫고 지나가지 못하도록 두께 30)
+  fogRect = { x: gateX - 15, y: gate2Top, w: 30, h: gate2Bottom - gate2Top };
+
+  // ----- 모래 점 (바다 영역 제외) -----
+  const rand = mulberry32(20261021);
   speckles = [];
   const count = Math.floor((seaStart * H) / 2500);
   for (let i = 0; i < count; i++) {
     speckles.push({
-      x: Math.random() * seaStart,
-      y: Math.random() * H,
-      s: Math.random() < 0.15 ? 5 : 3,
+      x: rand() * seaStart,
+      y: rand() * H,
+      s: rand() < 0.15 ? 5 : 3,
     });
   }
 
@@ -261,22 +393,37 @@ function layout() {
 
 function clampPlayer() {
   player.x = Math.max(player.rx, Math.min(maxPlayerX(), player.x));
-  player.y = Math.max(player.ry, Math.min(canvas.height - player.ry, player.y));
+  player.y = Math.max(player.ry, Math.min(worldH - player.ry, player.y));
 }
 
-// 플레이어가 갈 수 있는 가장 오른쪽 x (해안선 앞까지)
+// 플레이어가 갈 수 있는 가장 오른쪽 x
+//  - 안개가 짙으면 안개 입구 앞까지
+//  - 안개가 걷히면 해안선 앞까지
 function maxPlayerX() {
+  if (fogBlocks()) return gateX - 16 - player.rx - 1;
   return seaStart - 20 - player.rx;
 }
 
-// 카메라: 플레이어를 따라 좌우로 스크롤 (맵 밖은 보이지 않게 제한)
+// 카메라가 바라볼 x: 평소엔 플레이어, 관광객이 걸어오거나 대화 중이면 둘 사이(화면 안에 둘 다 보이게)
+function cameraFocusX() {
+  // 관광객이 화면에 같이 들어올 만큼 가까울 때만 둘 사이를 비춤 (멀리 있으면 플레이어만 따라감)
+  const touristNear = tourist.visible && Math.abs(player.x - tourist.x) < viewW - 120;
+  if (touristNear && (tourist.mode || dialogueActive)) {
+    const maxOffset = viewW / 2 - 60;
+    const mid = (player.x + tourist.x) / 2;
+    return Math.max(player.x - maxOffset, Math.min(player.x + maxOffset, mid));
+  }
+  return player.x;
+}
+
+// 카메라: 좌우로 스크롤 (맵 밖은 보이지 않게 제한)
 function updateCamera(dt, snap) {
-  const maxCam = Math.max(0, worldW - canvas.width);
-  const target = Math.max(0, Math.min(maxCam, player.x - canvas.width / 2));
+  const maxCam = Math.max(0, worldW - viewW);
+  const target = Math.max(0, Math.min(maxCam, cameraFocusX() - viewW / 2));
   camX = snap ? target : camX + (target - camX) * Math.min(1, dt * 8);
 }
 
-// ===== 5. 메시지 / 골드 / 위치 UI =====
+// ===== 6. 메시지 / 골드 / 위치 UI =====
 let messageUntil = 0;
 
 function showMessage(text, ms = 2000) {
@@ -300,23 +447,176 @@ function setArea(name) {
   areaTextEl.textContent = name;
 }
 
-// 마당 ↔ 마을 이동 감지 + 마을 첫 방문 처리
-function checkArea() {
-  const inVillage = player.x > fenceX;
-  setArea(inVillage ? "원주민 마을" : "오두막 마당");
+function areaNameAt(x) {
+  if (x > gateX) return "해안가 비경 구역";
+  if (x > fenceX) return "원주민 마을";
+  return "오두막 마당";
+}
 
-  if (inVillage && !save.villageVisited) {
+// 구역 이동 감지 + 마을 첫 방문 처리
+function checkArea() {
+  setArea(areaNameAt(player.x));
+
+  if (player.x > fenceX && !save.villageVisited) {
     save.villageVisited = true;
     saveGame();
     showMessage("원주민 마을에 도착했다! 가운데 있는 원주민에게 말을 걸어보자.", 4000);
   }
 }
 
-// ===== 6. 상호작용 대상 찾기 =====
+// 진동 (지원하는 기기에서만)
+function vibrate(pattern) {
+  try {
+    if (navigator.vibrate) navigator.vibrate(pattern);
+  } catch (e) {
+    /* 무시 */
+  }
+}
+
+// ===== 7. 모바일(터치) 조작 =====
+const coarseQuery = window.matchMedia("(pointer: coarse)");
+let touchMode = false;
+let rangeBonus = 0; // 터치에서는 상호작용 거리를 조금 넉넉하게
+
+const HINT_TEXT = {
+  desktop: {
+    hud: "이동: 방향키 / WASD  |  상호작용: E",
+    dlg: "클릭 또는 Enter",
+    carve: "마우스로 턱을 클릭해 날렵하게 깎으세요!",
+  },
+  touch: {
+    hud: "이동: 조이스틱  |  상호작용: E 버튼",
+    dlg: "화면을 탭하세요",
+    carve: "턱을 탭해서 날렵하게 깎으세요!",
+  },
+};
+
+function setTouchMode(on) {
+  if (touchMode === on) return;
+  touchMode = on;
+  document.body.classList.toggle("is-touch", on);
+  rangeBonus = on ? 20 : 0;
+
+  const t = on ? HINT_TEXT.touch : HINT_TEXT.desktop;
+  hudHintEl.textContent = t.hud;
+  dlgHintEl.textContent = t.dlg;
+  carveGuideEl.textContent = t.carve;
+
+  if (!on) resetJoystick();
+}
+
+// ----- 가상 조이스틱 -----
+const joy = { x: 0, y: 0 }; // 조이스틱 입력 (-1 ~ 1)
+let joyPointer = null;      // 조이스틱을 누르고 있는 손가락 id
+const JOY_DEADZONE = 0.18;
+
+function joyUpdate(e) {
+  const r = joystickEl.getBoundingClientRect();
+  const cx = r.left + r.width / 2;
+  const cy = r.top + r.height / 2;
+  const maxR = r.width * 0.34; // 손잡이가 움직이는 최대 반경
+
+  let dx = e.clientX - cx;
+  let dy = e.clientY - cy;
+  const len = Math.hypot(dx, dy);
+  if (len > maxR) {
+    dx = (dx / len) * maxR;
+    dy = (dy / len) * maxR;
+  }
+
+  stickEl.style.setProperty("--kx", dx + "px");
+  stickEl.style.setProperty("--ky", dy + "px");
+
+  const nx = dx / maxR;
+  const ny = dy / maxR;
+  const mag = Math.hypot(nx, ny);
+  if (mag < JOY_DEADZONE) {
+    joy.x = 0;
+    joy.y = 0;
+  } else {
+    // 데드존을 빼고 0~1 로 다시 맞춤 (살살 밀면 천천히, 끝까지 밀면 최대 속도)
+    const scale = (mag - JOY_DEADZONE) / (1 - JOY_DEADZONE) / mag;
+    joy.x = nx * scale;
+    joy.y = ny * scale;
+  }
+}
+
+function resetJoystick() {
+  joy.x = 0;
+  joy.y = 0;
+  if (joyPointer !== null) {
+    try {
+      joystickEl.releasePointerCapture(joyPointer);
+    } catch (e) {
+      /* 무시 */
+    }
+  }
+  joyPointer = null;
+  stickEl.style.setProperty("--kx", "0px");
+  stickEl.style.setProperty("--ky", "0px");
+}
+
+joystickEl.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  e.stopPropagation(); // 대화 넘기기 등 다른 터치 처리와 섞이지 않게
+  if (joyPointer !== null) return; // 이미 한 손가락이 잡고 있음
+  joyPointer = e.pointerId;
+  try {
+    joystickEl.setPointerCapture(e.pointerId);
+  } catch (err) {
+    /* 무시 */
+  }
+  joyUpdate(e);
+});
+
+joystickEl.addEventListener("pointermove", (e) => {
+  if (e.pointerId === joyPointer) joyUpdate(e);
+});
+
+["pointerup", "pointercancel", "lostpointercapture"].forEach((type) => {
+  joystickEl.addEventListener(type, (e) => {
+    if (e.pointerId === joyPointer) resetJoystick();
+  });
+});
+
+// ----- E 버튼 -----
+actionBtn.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  e.stopPropagation(); // 이 터치가 곧바로 대화를 넘기지 않게
+  if (dialogueActive || carveActive) return;
+  interact();
+});
+
+// 화면 상태에 맞춰 조작 UI 갱신 (대화/팝업 중엔 숨김, 상호작용 가능하면 E 버튼 강조)
+let uiBusy = false;
+let btnReady = false;
+
+function updateTouchUI(target) {
+  const busy = dialogueActive || carveActive;
+  if (busy !== uiBusy) {
+    uiBusy = busy;
+    document.body.classList.toggle("ui-busy", busy);
+    if (busy) resetJoystick();
+  }
+
+  const isReady = !!target;
+  if (isReady !== btnReady) {
+    btnReady = isReady;
+    actionBtn.classList.toggle("ready", isReady);
+  }
+}
+
+// 확대/길게 누르기 등 브라우저 기본 동작 막기 (iOS Safari 포함)
+document.addEventListener("gesturestart", (e) => e.preventDefault());
+window.addEventListener("contextmenu", (e) => {
+  if (touchMode) e.preventDefault();
+});
+
+// ===== 8. 상호작용 대상 찾기 =====
 function isNearMoai() {
   const dx = player.x - moai.x;
   const dy = player.y - (moai.y - moai.h / 2);
-  return Math.hypot(dx, dy) < moai.interactRange;
+  return Math.hypot(dx, dy) < moai.interactRange + rangeBonus;
 }
 
 function nearPoint(o, range) {
@@ -330,7 +630,7 @@ function nearRect(r, range) {
   return Math.hypot(player.x - px, player.y - py) < range;
 }
 
-// 지금 E 키로 상호작용할 수 있는 대상 (없으면 null)
+// 지금 E 키(또는 E 버튼)로 상호작용할 수 있는 대상 (없으면 null)
 function getTarget() {
   if (dialogueActive || carveActive) return null;
 
@@ -346,7 +646,7 @@ function getTarget() {
   }
 
   // 원주민 NPC
-  if (nearPoint(villager, 75)) {
+  if (nearPoint(villager, 75 + rangeBonus)) {
     return {
       id: "villager",
       label: "[E] 대화하기",
@@ -356,10 +656,35 @@ function getTarget() {
     };
   }
 
+  // 3구역 인수 표지판
+  if (nearRect(zoneSign.rect, 50 + rangeBonus)) {
+    return {
+      id: "zoneSign",
+      label: "[E] 표지판 읽기",
+      x: zoneSign.x + zoneSign.w / 2,
+      y: zoneSign.y,
+      below: false,
+    };
+  }
+
+  // 3구역 쌍턱 모아이 (안개가 걷힌 뒤에만)
+  if (isZoneUnlocked("zone3") && !fogBlocks()) {
+    const c = { x: coastMoai.x, y: coastMoai.y - coastMoai.h / 2 };
+    if (nearPoint(c, coastMoai.interactRange + rangeBonus)) {
+      return {
+        id: "coastMoai",
+        label: "[E] 쌍턱 모아이 (다음 단계에서 오픈)",
+        x: coastMoai.x,
+        y: coastMoai.y - coastMoai.h - 20,
+        below: false,
+      };
+    }
+  }
+
   // 마을 건물: 소개 대화가 끝난 뒤에만 안내가 뜸
   if (save.villageIntroDone) {
     for (const b of buildings) {
-      if (nearRect(b, 55)) {
+      if (nearRect(b, 55 + rangeBonus)) {
         return { id: b.id, label: b.prompt, x: b.x + b.w / 2, y: b.y + b.h, below: true, building: b };
       }
     }
@@ -367,7 +692,39 @@ function getTarget() {
   return null;
 }
 
-// ===== 7. 키보드 입력 =====
+// E 키(또는 E 버튼)를 눌렀을 때 대상별 동작
+function interact() {
+  const target = getTarget();
+  if (!target) return;
+
+  switch (target.id) {
+    case "moai":
+      if (save.isSharp) showMessage("이미 날렵한 V라인이다!", 2000);
+      else openCarve();
+      break;
+
+    case "villager":
+      if (save.villageIntroDone) startDialogue(villagerRepeatScript);
+      else startDialogue(villageIntroScript, onVillageIntroEnd);
+      break;
+
+    case "zoneSign":
+      if (isZoneUnlocked("zone3")) startDialogue(signUnlockedScript);
+      else if (save.gold >= ZONE3_PRICE) startDialogue(signBuyScript, onZone3Purchase);
+      else startDialogue(signLockedScript);
+      break;
+
+    case "coastMoai":
+      showMessage("쌍턱 모아이는 다음 단계에서 조각할 수 있습니다!", 2500);
+      break;
+
+    default:
+      // 상점 / 홍보판 / 부동산: 다음 단계에서 오픈
+      if (target.building) showMessage(target.building.closedMsg, 2200);
+  }
+}
+
+// ===== 9. 키보드 / 포인터 입력 =====
 // e.code는 물리적 키 위치라서 한글 입력 상태에서도 WASD가 동작합니다.
 const keys = {};
 
@@ -397,62 +754,22 @@ window.addEventListener("keyup", (e) => {
   keys[e.code] = false;
 });
 
-// 터치 방향 패드는 기존 키보드 이동 상태를 그대로 사용
-document.querySelectorAll(".touch-pad [data-key]").forEach((button) => {
-  const key = button.dataset.key;
-
-  button.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    button.setPointerCapture(e.pointerId);
-    keys[key] = true;
-    button.classList.add("is-pressed");
-  });
-
-  const release = () => {
-    keys[key] = false;
-    button.classList.remove("is-pressed");
-  };
-
-  button.addEventListener("pointerup", release);
-  button.addEventListener("pointercancel", release);
-  button.addEventListener("lostpointercapture", release);
-});
-
-document.querySelector(".touch-interact").addEventListener("click", interact);
-
 // 창 포커스를 잃으면 눌린 키 상태 초기화 (캐릭터가 계속 걷는 현상 방지)
 window.addEventListener("blur", () => {
   for (const k in keys) keys[k] = false;
+  resetJoystick();
 });
 
-// 클릭으로도 대화 진행
-window.addEventListener("mousedown", () => {
+// 화면 터치/클릭으로 대화 진행 (조이스틱, E 버튼, 리셋 버튼은 stopPropagation 으로 제외됨)
+window.addEventListener("pointerdown", (e) => {
+  // 입력 종류에 맞춰 조작 UI 전환 (터치하면 조이스틱 표시, 마우스를 쓰면 숨김)
+  if (e.pointerType === "touch") setTouchMode(true);
+  else if (e.pointerType === "mouse" && !coarseQuery.matches) setTouchMode(false);
+
   if (dialogueActive) advanceDialogue();
 });
 
-// E 키를 눌렀을 때 대상별 동작
-function interact() {
-  const target = getTarget();
-  if (!target) return;
-
-  switch (target.id) {
-    case "moai":
-      if (save.isSharp) showMessage("이미 날렵한 V라인이다!", 2000);
-      else openCarve();
-      break;
-
-    case "villager":
-      if (save.villageIntroDone) startDialogue(villagerRepeatScript);
-      else startDialogue(villageIntroScript, onVillageIntroEnd);
-      break;
-
-    default:
-      // 상점 / 홍보판 / 부동산: 다음 단계에서 오픈
-      if (target.building) showMessage(target.building.closedMsg, 2200);
-  }
-}
-
-// ===== 8. 대화 시스템 =====
+// ===== 10. 대화 시스템 =====
 const tutorialScript = [
   { speaker: "주인공", text: "할아버지… 세상에 날 혼자 두고 가시면 어떡해요…." },
   { speaker: "주인공", text: "부모님도 없고, 일자리도 없고… 가진 거라곤 할아버지가 남겨주신 이스터 섬의 땅 한 평뿐이라니." },
@@ -490,6 +807,25 @@ const villagerRepeatScript = [
   { speaker: "원주민", text: "열심히 턱을 깎아서 돈을 벌게나! [도구 상점], [홍보판], [이스터 부동산]을 잊지 말고!" },
 ];
 
+// 3구역 인수 표지판 대화
+const signLockedScript = [
+  { speaker: "표지판", text: `이 구역은 '이스터 부동산'에서 인수 후 개발할 수 있습니다! (필요 골드: ${ZONE3_PRICE} Gold)` },
+];
+
+const signBuyScript = [
+  { speaker: "표지판", text: `이 구역은 '이스터 부동산'에서 인수 후 개발할 수 있습니다! (필요 골드: ${ZONE3_PRICE} Gold)` },
+  {
+    speaker: "표지판",
+    text: DEDUCT_GOLD_ON_UNLOCK
+      ? `[인수 완료] ${ZONE3_PRICE} Gold를 지불했습니다. 짙은 안개가 서서히 걷힙니다…`
+      : "[인수 완료] 안개가 서서히 걷힙니다…",
+  },
+];
+
+const signUnlockedScript = [
+  { speaker: "표지판", text: "[인수 완료] 이곳은 해안가 비경 구역입니다. 안쪽에서 특이한 모아이 석상이 기다리고 있습니다!" },
+];
+
 let dialogueScript = [];
 let dialogueOnEnd = null;
 let dialogueActive = false;
@@ -503,7 +839,6 @@ function startDialogue(script, onEnd) {
   dialogueScript = script;
   dialogueOnEnd = onEnd || null;
   dialogueActive = true;
-  document.body.classList.add("dialogue-open");
   dialogueIndex = 0;
   dialogueEl.classList.remove("hidden");
   showLine();
@@ -554,7 +889,6 @@ function advanceDialogue() {
 
 function endDialogue() {
   dialogueActive = false;
-  document.body.classList.remove("dialogue-open");
   dialogueEl.classList.add("hidden");
 
   const callback = dialogueOnEnd;
@@ -575,6 +909,7 @@ function onRewardEnd() {
   save.gold += 100;
   updateGoldUI(true);
   showMessage("+100 Gold!", 2500);
+  vibrate(30);
   saveGame();
 
   tourist.mode = "leaving"; // 관광객은 마을 쪽으로 돌아감
@@ -587,14 +922,33 @@ function onVillageIntroEnd() {
   showMessage("이제 마을 건물에 가까이 가 보자!", 3000);
 }
 
-// ===== 9. 턱 깎기 미니게임 =====
+// 3구역 인수 (임시 테스트 로직): 골드가 충분하면 해금하고 안개를 걷어냄
+function onZone3Purchase() {
+  if (isZoneUnlocked("zone3")) return;
+  if (save.gold < ZONE3_PRICE) return; // 대화 도중 골드가 줄어든 경우 대비
+
+  if (DEDUCT_GOLD_ON_UNLOCK) save.gold -= ZONE3_PRICE;
+  save.unlockedZones.zone3 = true; // 이제부터 안개가 걷히기 시작 (update 의 updateFog 참고)
+  updateGoldUI(true);
+  saveGame();
+  showMessage("해안가 비경 구역을 인수했다! 안개가 서서히 걷힌다…", 4000);
+  vibrate([40, 30, 80]);
+}
+
+// 안개가 서서히 걷힘
+function updateFog(dt) {
+  if (isZoneUnlocked("zone3") && fogAlpha > 0) {
+    fogAlpha = Math.max(0, fogAlpha - dt / FOG_FADE_SEC);
+  }
+}
+
+// ===== 11. 턱 깎기 미니게임 =====
 let carveActive = false;     // 팝업이 열려 있는지
 let carveFinishing = false;  // 100% 도달 후 닫히는 중인지
 let carveProgress = 0;       // V라인 완성도 (0~100)
 
 function openCarve() {
   carveActive = true;
-  document.body.classList.add("carve-open");
   carveFinishing = false;
   carveDoneEl.classList.add("hidden");
   carveModal.classList.remove("hidden");
@@ -605,7 +959,6 @@ function openCarve() {
 
 function closeCarve() {
   carveActive = false;
-  document.body.classList.remove("carve-open");
   carveModal.classList.add("hidden");
 }
 
@@ -670,6 +1023,7 @@ function hitChin(clientX, clientY) {
   shakeAll();
   spawnChips(clientX, clientY);
   renderCarve();
+  vibrate(12);
 
   if (carveProgress >= 100) finishCarve();
 }
@@ -677,6 +1031,7 @@ function hitChin(clientX, clientY) {
 function finishCarve() {
   carveFinishing = true;
   carveDoneEl.classList.remove("hidden"); // "날렵한 V라인 완성!"
+  vibrate([40, 30, 60]);
 
   setTimeout(() => {
     closeCarve();
@@ -689,7 +1044,12 @@ function finishCarve() {
   }, 1500);
 }
 
-chinEl.addEventListener("click", (e) => hitChin(e.clientX, e.clientY));
+// 터치에서도 빠르게 연타할 수 있도록 pointerdown 사용
+chinEl.addEventListener("pointerdown", (e) => {
+  if (e.pointerType === "mouse" && e.button !== 0) return;
+  e.preventDefault();
+  hitChin(e.clientX, e.clientY);
+});
 carveBtn.addEventListener("click", () => {
   carveBtn.blur(); // Space/Enter로 다시 눌리는 것 방지
   hitChin();
@@ -699,7 +1059,7 @@ carveClose.addEventListener("click", () => {
   if (!carveFinishing) closeCarve();
 });
 
-// ===== 10. 관광객 보상 스토리 =====
+// ===== 12. 관광객 보상 스토리 =====
 // 마을 쪽 울타리 통로에서 등장해 석상 앞까지 걸어옴
 function startTouristVisit() {
   if (save.rewardDone) return;
@@ -738,7 +1098,7 @@ function updateTourist(dt) {
   }
 }
 
-// ===== 11. 유틸 함수 =====
+// ===== 13. 유틸 함수 =====
 function hitsRect(px, py, r) {
   return (
     px + player.rx > r.x &&
@@ -749,7 +1109,9 @@ function hitsRect(px, py, r) {
 }
 
 function collides(px, py) {
-  return obstacles.some((r) => hitsRect(px, py, r));
+  if (obstacles.some((r) => hitsRect(px, py, r))) return true;
+  // 안개가 짙은 동안은 3구역 입구가 막혀 있음
+  return fogBlocks() && hitsRect(px, py, fogRect);
 }
 
 // 바다 해안선의 x좌표 (파도에 따라 일렁임)
@@ -757,7 +1119,7 @@ function shoreX(y, t) {
   return seaStart + Math.sin(y * 0.02 + t * 2) * 8 + Math.sin(y * 0.05 - t * 1.3) * 4;
 }
 
-// ===== 12. 업데이트 =====
+// ===== 14. 업데이트 =====
 function update(dt) {
   // 시간이 지난 메시지 지우기
   if (messageUntil && performance.now() > messageUntil) {
@@ -766,6 +1128,7 @@ function update(dt) {
   }
 
   updateTourist(dt);
+  updateFog(dt);
 
   // 대화 중이거나 팝업이 열려 있으면 이동 불가
   if (!dialogueActive && !carveActive) {
@@ -777,9 +1140,15 @@ function update(dt) {
     if (keys["ArrowUp"] || keys["KeyW"]) dy -= 1;
     if (keys["ArrowDown"] || keys["KeyS"]) dy += 1;
 
-    if (dx !== 0 && dy !== 0) {
-      dx *= Math.SQRT1_2;
-      dy *= Math.SQRT1_2;
+    // 조이스틱(아날로그) 입력을 더함
+    dx += joy.x;
+    dy += joy.y;
+
+    // 대각선이어도 속도가 빨라지지 않도록 길이를 1 이하로 맞춤
+    const mag = Math.hypot(dx, dy);
+    if (mag > 1) {
+      dx /= mag;
+      dy /= mag;
     }
 
     const nextX = player.x + dx * player.speed * dt;
@@ -788,7 +1157,7 @@ function update(dt) {
     const nextY = player.y + dy * player.speed * dt;
     if (!collides(player.x, nextY)) player.y = nextY;
 
-    // 맵 경계(화면 + 해안선) 밖으로 나가지 않게 제한
+    // 맵 경계(화면 + 안개 입구/해안선) 밖으로 나가지 않게 제한
     clampPlayer();
     checkArea();
   }
@@ -796,7 +1165,7 @@ function update(dt) {
   updateCamera(dt, false);
 }
 
-// ===== 13. 그리기 =====
+// ===== 15. 그리기 =====
 // 글자 가장자리에 검은 테두리를 둘러 모래색 배경에서도 읽기 쉽게 함
 function drawLabel(text, x, y, size = 13) {
   ctx.font = `${size}px sans-serif`;
@@ -809,26 +1178,23 @@ function drawLabel(text, x, y, size = 13) {
 }
 
 function drawGround(camDrawX) {
-  const W = canvas.width;
-  const H = canvas.height;
-
   // 모래 바닥 (화면에 보이는 부분 전체 채움)
   ctx.fillStyle = "#e2c98f";
-  ctx.fillRect(camDrawX, 0, W + 1, H);
+  ctx.fillRect(camDrawX - 1, 0, viewW + 2, viewH);
 
   ctx.fillStyle = "rgba(150, 120, 60, 0.28)";
   for (const s of speckles) {
-    if (s.x > camDrawX - 8 && s.x < camDrawX + W + 8) ctx.fillRect(s.x, s.y, s.s, s.s);
+    if (s.x > camDrawX - 8 && s.x < camDrawX + viewW + 8) ctx.fillRect(s.x, s.y, s.s, s.s);
   }
 }
 
 // 마을 바닥(살짝 다른 톤) + 흙길
 function drawVillageGround() {
-  const H = canvas.height;
+  const H = viewH;
   const [shop, , estate] = buildings;
 
   ctx.fillStyle = "rgba(190, 150, 80, 0.14)";
-  ctx.fillRect(fenceX, 0, seaStart - fenceX, H);
+  ctx.fillRect(fenceX, 0, gateX - fenceX, H);
 
   // 흙길
   ctx.fillStyle = "#d2b57c";
@@ -839,10 +1205,89 @@ function drawVillageGround() {
   ctx.fillRect(villager.x - 28, rowY, 56, villager.y - rowY);
   // 건물 앞 가로 길
   ctx.fillRect(shop.x + shop.w / 2, rowY, estate.x + estate.w / 2 - (shop.x + shop.w / 2), 36);
+  // 마을 중앙 → 안개 입구 (3구역으로 가는 길)
+  ctx.fillRect(villager.x - 28, villager.y, 56, gate2Y + 30 - villager.y);
+  ctx.fillRect(villager.x, gate2Y - 30, gateX + 60 - villager.x, 60);
+}
+
+// 3구역 바닥: 밝은 해변 모래 + 물웅덩이 + 바위 + 야자수 (안개 아래에 깔림)
+function drawCoastGround(t) {
+  const H = viewH;
+
+  // 밝은 해변 색
+  ctx.fillStyle = "rgba(255, 240, 205, 0.42)";
+  ctx.fillRect(gateX, 0, seaStart - gateX, H);
+
+  // 물웅덩이
+  for (const p of coastDecor.pools) {
+    ctx.fillStyle = "rgba(90, 190, 225, 0.85)";
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y, p.rx, p.ry, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.7)";
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    // 반짝임
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y, p.rx * 0.55, p.ry * 0.5, 0, 0, Math.PI * (1 + 0.5 * Math.sin(t * 2 + p.x)));
+    ctx.stroke();
+  }
+
+  // 바위
+  for (const r of coastDecor.rocks) {
+    ctx.fillStyle = "#8a8f94";
+    ctx.beginPath();
+    ctx.ellipse(r.x, r.y, r.r * 1.3, r.r, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#4a4e52";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = "rgba(255, 255, 255, 0.25)";
+    ctx.beginPath();
+    ctx.ellipse(r.x - r.r * 0.3, r.y - r.r * 0.3, r.r * 0.5, r.r * 0.3, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 야자수
+  for (const p of coastDecor.palms) drawPalm(p.x, p.y, 1);
+}
+
+function drawPalm(x, y, s) {
+  // 줄기
+  ctx.strokeStyle = "#7a5230";
+  ctx.lineWidth = 6 * s;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.quadraticCurveTo(x + 8 * s, y - 30 * s, x + 4 * s, y - 60 * s);
+  ctx.stroke();
+  ctx.lineCap = "butt";
+
+  // 잎 (살랑살랑 흔들림)
+  const tx = x + 4 * s;
+  const ty = y - 60 * s;
+  ctx.fillStyle = "#2e8b57";
+  for (let i = 0; i < 5; i++) {
+    const a = (i - 2) * 0.75 + Math.sin(animT * 1.5 + i + x) * 0.05;
+    ctx.save();
+    ctx.translate(tx, ty);
+    ctx.rotate(a);
+    ctx.beginPath();
+    ctx.ellipse(0, -16 * s, 6 * s, 20 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  ctx.fillStyle = "#6b3f1d"; // 코코넛
+  ctx.beginPath();
+  ctx.arc(tx - 3 * s, ty + 3 * s, 3.5 * s, 0, Math.PI * 2);
+  ctx.arc(tx + 4 * s, ty + 4 * s, 3.5 * s, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 function drawSea(t) {
-  const H = canvas.height;
+  const H = viewH;
 
   // 젖은 모래 띠 (해안선 안쪽)
   ctx.fillStyle = "#c9ab6c";
@@ -893,41 +1338,62 @@ function drawSea(t) {
   }
 }
 
-// 마당과 마을 사이의 울타리 + 통로 표지판
-function drawFence() {
-  const H = canvas.height;
+// 울타리 한 줄 (통로 gapTop~gapBottom 만 비어 있음)
+function drawFenceLine(x, gapTop, gapBottom, colors) {
+  const H = viewH;
 
   // 가로대
-  ctx.fillStyle = "#7a5230";
-  ctx.fillRect(fenceX - 4, 0, 8, gateTop);
-  ctx.fillRect(fenceX - 4, gateBottom, 8, H - gateBottom);
+  ctx.fillStyle = colors.rail;
+  ctx.fillRect(x - 4, 0, 8, gapTop);
+  ctx.fillRect(x - 4, gapBottom, 8, H - gapBottom);
 
   // 기둥
-  ctx.fillStyle = "#5b3a1c";
+  ctx.fillStyle = colors.post;
   for (let y = 0; y < H; y += 40) {
-    if (y + 20 > gateTop && y < gateBottom) continue; // 통로 부분은 비움
-    ctx.fillRect(fenceX - 8, y, 16, 22);
+    if (y + 20 > gapTop && y < gapBottom) continue; // 통로 부분은 비움
+    ctx.fillRect(x - 8, y, 16, 22);
   }
 
   // 통로 양쪽 문기둥
-  ctx.fillStyle = "#4a2f16";
-  ctx.fillRect(fenceX - 10, gateTop - 8, 20, 16);
-  ctx.fillRect(fenceX - 10, gateBottom - 8, 20, 16);
+  ctx.fillStyle = colors.gate;
+  ctx.fillRect(x - 10, gapTop - 8, 20, 16);
+  ctx.fillRect(x - 10, gapBottom - 8, 20, 16);
+}
 
-  // 표지판
-  const signW = 120;
-  const signH = 26;
-  const sx = fenceX - signW / 2;
-  const sy = gateTop - 40;
+// 작은 안내 팻말 (울타리 통로 위)
+function drawSmallSign(cx, cy, w, text) {
+  const h = 26;
   ctx.fillStyle = "#c9a46a";
-  ctx.fillRect(sx, sy, signW, signH);
+  ctx.fillRect(cx - w / 2, cy, w, h);
   ctx.strokeStyle = "#4e3016";
   ctx.lineWidth = 3;
-  ctx.strokeRect(sx, sy, signW, signH);
+  ctx.strokeRect(cx - w / 2, cy, w, h);
   ctx.fillStyle = "#3b2410";
   ctx.font = "bold 13px sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText("원주민 마을 ▶", fenceX, sy + 18);
+  ctx.fillText(text, cx, cy + 18);
+}
+
+function drawFences() {
+  // 1구역 ↔ 2구역: 나무 울타리
+  drawFenceLine(fenceX, gateTop, gateBottom, { rail: "#7a5230", post: "#5b3a1c", gate: "#4a2f16" });
+  drawSmallSign(fenceX, gateTop - 40, 120, "원주민 마을 ▶");
+
+  // 2구역 ↔ 3구역: 돌 울타리 (안개 입구)
+  drawFenceLine(gateX, gate2Top, gate2Bottom, { rail: "#8d8d8d", post: "#5a5a5a", gate: "#3d3d3d" });
+  drawSmallSign(gateX, gate2Top - 40, 140, isZoneUnlocked("zone3") ? "해안가 비경 ▶" : "??? 미개척 구역");
+
+  // 아직 인수 전이면 입구에 붉은 밧줄
+  if (!isZoneUnlocked("zone3")) {
+    ctx.strokeStyle = "#d9534f";
+    ctx.lineWidth = 4;
+    for (const y of [gate2Top + 12, gate2Bottom - 12]) {
+      ctx.beginPath();
+      ctx.moveTo(gateX - 10, y);
+      ctx.quadraticCurveTo(gateX, y + 8, gateX + 10, y);
+      ctx.stroke();
+    }
+  }
 }
 
 function drawHut() {
@@ -1046,11 +1512,37 @@ function drawBuildings() {
   }
 }
 
-// 석상 발밑 그림자 (두 모양 공통)
-function drawMoaiShadow() {
+// 안개 입구 앞 '인수 대기중' 표지판 (안개 위에 그려서 항상 읽을 수 있음)
+function drawZoneSign() {
+  const unlocked = isZoneUnlocked("zone3");
+  const text = unlocked ? "[인수 완료 : 해안가 비경 구역]" : "[인수 대기중 : 이스터 부동산]";
+  const s = zoneSign;
+
+  // 기둥
+  ctx.fillStyle = "#5b3a1c";
+  ctx.fillRect(s.postX - 5, s.y + s.h, 10, 26);
+
+  // 판
+  ctx.fillStyle = unlocked ? "#b9d9a0" : "#e0bd78";
+  ctx.fillRect(s.x, s.y, s.w, s.h);
+  ctx.strokeStyle = "#4e3016";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(s.x, s.y, s.w, s.h);
+
+  // 글자
+  ctx.fillStyle = unlocked ? "#1f4d1f" : "#8a1f1f";
+  ctx.font = "bold 13px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, s.x + s.w / 2, s.y + s.h / 2 + 1);
+  ctx.textBaseline = "alphabetic";
+}
+
+// 석상 발밑 그림자 (모든 석상 공통)
+function drawMoaiShadow(m) {
   ctx.fillStyle = "rgba(0, 0, 0, 0.2)";
   ctx.beginPath();
-  ctx.ellipse(moai.x, moai.y, moai.w * 0.7, 10, 0, 0, Math.PI * 2);
+  ctx.ellipse(m.x, m.y, m.w * 0.7, 10, 0, 0, Math.PI * 2);
   ctx.fill();
 }
 
@@ -1059,7 +1551,7 @@ function drawMoai() {
   const left = moai.x - moai.w / 2;
   const top = moai.y - moai.h;
 
-  drawMoaiShadow();
+  drawMoaiShadow(moai);
 
   ctx.fillStyle = "#8d8d8d";
   ctx.fillRect(left, top, moai.w, moai.h);
@@ -1088,7 +1580,7 @@ function drawMoaiV() {
   const right = moai.x + moai.w / 2;
   const top = moai.y - moai.h;
 
-  drawMoaiShadow();
+  drawMoaiShadow(moai);
 
   // 몸통
   ctx.fillStyle = "#7b7b7b";
@@ -1125,6 +1617,58 @@ function drawMoaiV() {
   ctx.fillStyle = `rgba(255, 235, 120, ${a})`;
   ctx.fillRect(sx - 1, sy - 8, 3, 16);
   ctx.fillRect(sx - 8, sy - 1, 16, 3);
+}
+
+// 3구역의 특이한 석상: 턱이 두 겹인 쌍턱 모아이 (이끼 낀 청회색)
+function drawMoaiDouble() {
+  const m = coastMoai;
+  const left = m.x - m.w / 2;
+  const top = m.y - m.h;
+
+  drawMoaiShadow(m);
+
+  // 머리 + 몸통
+  ctx.fillStyle = "#7f8f8a";
+  ctx.fillRect(left, top, m.w, m.h);
+  ctx.fillRect(left - 4, top, m.w + 8, 40);
+
+  // 이끼
+  ctx.fillStyle = "#5f8f4a";
+  ctx.fillRect(left - 4, top, 16, 8);
+  ctx.fillRect(left + m.w - 10, top + 38, 14, 10);
+  ctx.fillRect(left, top + 92, 20, 8);
+
+  // 눈썹 그늘 / 코 / 입
+  ctx.fillStyle = "#4f5d59";
+  ctx.fillRect(left, top + 14, m.w, 8);
+  ctx.fillStyle = "#68766f";
+  ctx.fillRect(m.x - 5, top + 20, 10, 26);
+  ctx.fillStyle = "#33403c";
+  ctx.fillRect(m.x - 14, top + 54, 28, 4);
+
+  // 쌍턱: 첫째 턱 + 둘째 턱
+  ctx.fillStyle = "#9db0aa";
+  ctx.fillRect(m.x - 20, top + 60, 40, 20);
+  ctx.fillStyle = "#86988f";
+  ctx.fillRect(m.x - 15, top + 80, 30, 18);
+  ctx.strokeStyle = "#2f3a37";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(m.x - 20, top + 60, 40, 20);
+  ctx.strokeRect(m.x - 15, top + 80, 30, 18);
+
+  // 외곽선
+  ctx.lineWidth = 3;
+  ctx.strokeRect(left, top, m.w, m.h);
+
+  // 신비한 푸른 반짝임
+  const a = 0.35 + 0.65 * ((Math.sin(animT * 4 + 1) + 1) / 2);
+  ctx.fillStyle = `rgba(140, 235, 255, ${a})`;
+  const sx = m.x + m.w / 2 + 16;
+  const sy = top + 30;
+  ctx.fillRect(sx - 1, sy - 8, 3, 16);
+  ctx.fillRect(sx - 8, sy - 1, 16, 3);
+
+  drawLabel("쌍턱 모아이", m.x, top - 10);
 }
 
 // 타원형 캐릭터 공통 그리기
@@ -1167,6 +1711,46 @@ function drawVillager() {
   drawLabel("원주민", villager.x, villager.y + villager.ry + 16, 12);
 }
 
+// 안개 덩어리 하나 (가운데가 짙고 가장자리로 갈수록 투명)
+function fogBlob(x, y, r, rgb, a) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, `rgba(${rgb}, ${a})`);
+  g.addColorStop(1, `rgba(${rgb}, 0)`);
+  ctx.fillStyle = g;
+  ctx.fillRect(x - r, y - r, r * 2, r * 2);
+}
+
+// 미해금 3구역을 덮는 어두운 안개 (fogAlpha 가 줄어들면 서서히 걷힘)
+function drawFog(t) {
+  if (fogAlpha <= 0.002) return;
+
+  const H = viewH;
+  const zoneW = worldW - gateX;
+
+  ctx.save();
+  ctx.globalAlpha = fogAlpha;
+
+  // 1) 3구역 전체를 덮는 어두운 안개 (울타리 바로 뒤에서 시작)
+  ctx.fillStyle = "rgba(14, 18, 38, 0.95)";
+  ctx.fillRect(gateX + 2, 0, zoneW, H);
+
+  // 2) 안쪽에서 천천히 흘러가는 옅은 안개 덩어리
+  for (let i = 0; i < 14; i++) {
+    const bx = gateX + 120 + ((i * 0.137 + 0.05) % 1) * (zoneW - 240) + Math.sin(t * 0.25 + i * 2.1) * 40;
+    const by = ((i * 0.331 + 0.11) % 1) * H + Math.cos(t * 0.2 + i * 1.3) * 30;
+    fogBlob(bx, by, 90 + (i % 4) * 25, "120, 130, 175", 0.22);
+  }
+
+  // 3) 입구 틈에서 바깥으로 새어 나오는 짙은 안개
+  for (let i = 0; i < 10; i++) {
+    const bx = gateX - 20 + Math.sin(t * 0.5 + i * 1.9) * 30 + (i % 3) * 8;
+    const by = gate2Top - 20 + (i / 9) * (gate2Bottom - gate2Top + 40) + Math.cos(t * 0.4 + i) * 12;
+    fogBlob(bx, by, 60 + (i % 3) * 14, "30, 36, 66", 0.85);
+  }
+
+  ctx.restore();
+}
+
 function roundedRectPath(x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -1186,7 +1770,7 @@ function drawPrompt(target, camDrawX) {
   const boxH = 32;
 
   let boxX = target.x - boxW / 2;
-  boxX = Math.max(camDrawX + 4, Math.min(camDrawX + canvas.width - boxW - 4, boxX)); // 화면 밖으로 안 나가게
+  boxX = Math.max(camDrawX + 4, Math.min(camDrawX + viewW - boxW - 4, boxX)); // 화면 밖으로 안 나가게
   const boxY = target.below ? target.y + 8 : Math.max(4, target.y - boxH - 14);
 
   roundedRectPath(boxX, boxY, boxW, boxH, 8);
@@ -1205,21 +1789,27 @@ function drawPrompt(target, camDrawX) {
 
 function draw(t) {
   animT = t;
-  const camDrawX = Math.round(camX);
 
+  // 화면 선명도(dpr)와 축소 배율(zoom)을 반영한 좌표계. 카메라는 실제 픽셀 단위로 맞춰서 흔들림 방지
+  const s = dpr * zoom;
+  const camDrawX = Math.round(camX * s) / s;
+
+  ctx.setTransform(s, 0, 0, s, 0, 0);
   ctx.save();
   ctx.translate(-camDrawX, 0); // 이후는 모두 '맵 좌표'로 그림
 
   drawGround(camDrawX);
   drawVillageGround();
+  drawCoastGround(t);
   drawSea(t);
-  drawFence();
+  drawFences();
   drawHut();
   drawBuildings();
 
   // y(발밑) 기준으로 정렬해서 아래쪽에 있는 것이 위에 그려지게 함
   const list = [
     { y: moai.y, fn: save.isSharp ? drawMoaiV : drawMoai },
+    { y: coastMoai.y, fn: drawMoaiDouble },
     { y: player.y + player.ry, fn: drawPlayer },
     { y: villager.y + villager.ry, fn: drawVillager },
   ];
@@ -1227,14 +1817,21 @@ function draw(t) {
   list.sort((a, b) => a.y - b.y);
   list.forEach((o) => o.fn());
 
+  // 3구역 위에 안개를 덮고, 표지판은 그 위에 그림
+  drawFog(t);
+  drawZoneSign();
+
   // 상호작용 안내
   const target = getTarget();
   if (target && target.label) drawPrompt(target, camDrawX);
 
   ctx.restore();
+
+  // 모바일 조작 UI(E 버튼 강조, 대화 중 숨김) 갱신
+  updateTouchUI(target);
 }
 
-// ===== 14. 게임 루프 =====
+// ===== 16. 게임 루프 =====
 let lastTime = performance.now();
 
 function loop(now) {
@@ -1246,9 +1843,10 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
-// ===== 15. 리셋 버튼 =====
-// 버튼을 눌러도 대화가 넘어가지 않도록 클릭 전파를 막음
-resetBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+// ===== 17. 리셋 / 테스트 버튼 =====
+// 버튼을 눌러도 대화가 넘어가지 않도록 포인터 전파를 막음
+resetBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
+testGoldBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
 
 resetBtn.addEventListener("click", () => {
   resetBtn.blur(); // 포커스가 남아 Space/Enter로 다시 눌리는 것 방지
@@ -1264,7 +1862,16 @@ resetBtn.addEventListener("click", () => {
   location.reload(); // 초기 상태(튜토리얼)부터 다시 시작
 });
 
-// ===== 16. 자동 저장 =====
+// (테스트용) 골드 100 추가: 3구역 인수 비용 500G 를 모으기 위한 임시 버튼
+testGoldBtn.addEventListener("click", () => {
+  testGoldBtn.blur();
+  save.gold += 100;
+  updateGoldUI(true);
+  saveGame();
+  showMessage(`+100 Gold (테스트) → 보유 ${save.gold} G`, 1500);
+});
+
+// ===== 18. 자동 저장 =====
 // 위치는 계속 바뀌므로 주기적으로 + 탭을 닫거나 숨길 때 저장
 setInterval(saveGame, 3000);
 window.addEventListener("beforeunload", saveGame);
@@ -1273,25 +1880,29 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") saveGame();
 });
 
-// ===== 17. 시작 =====
+// ===== 19. 시작 =====
 window.addEventListener("resize", layout);
-window.addEventListener("orientationchange", layout);
-window.visualViewport?.addEventListener("resize", layout);
+// 일부 모바일 브라우저는 회전 직후 창 크기가 늦게 갱신되므로 한 번 더 맞춤
+window.addEventListener("orientationchange", () => setTimeout(layout, 250));
+
+if (DEBUG_TOOLS) document.body.classList.add("debug");
+setTouchMode(coarseQuery.matches); // 터치 기기면 처음부터 조이스틱 표시
+
 layout();
 updateGoldUI();
 
 // 저장된 위치(비율)를 복원. 장애물 안에 끼는 위치면 기본 위치로 대체
 player.x = save.playerPos.x * worldW;
-player.y = save.playerPos.y * canvas.height;
-clampPlayer();
+player.y = save.playerPos.y * worldH;
+clampPlayer(); // 미해금 상태라면 안개 입구 앞까지로 제한됨
 if (collides(player.x, player.y)) {
   player.x = DEFAULT_PLAYER_POS.x * worldW;
-  player.y = DEFAULT_PLAYER_POS.y * canvas.height;
+  player.y = DEFAULT_PLAYER_POS.y * worldH;
   clampPlayer();
 }
 
 // 현재 위치 표시 + 카메라를 플레이어에게 바로 맞춤
-setArea(player.x > fenceX ? "원주민 마을" : "오두막 마당");
+setArea(areaNameAt(player.x));
 updateCamera(0, true);
 
 ready = true;

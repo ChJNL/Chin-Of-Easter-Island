@@ -40,6 +40,27 @@
     <div id="dlgHint" class="dlg-hint">클릭 또는 Enter</div>
   </div>
 
+  <!-- 전체 지도: 실제 월드와 같은 지형을 표시 -->
+  <div id="mapModal" class="modal map-modal hidden" role="dialog" aria-modal="true" aria-labelledby="mapTitle" aria-describedby="mapHelp">
+    <section class="map-panel">
+      <header class="map-header">
+        <div><p class="map-eyebrow">태평양의 비밀을 찾아서</p><h1 id="mapTitle">이스터 섬 전체 지도</h1></div>
+        <button id="mapClose" class="map-close" type="button" aria-label="전체 지도 닫기">✕</button>
+      </header>
+      <p id="mapHelp" class="map-help">서쪽 마당에서 북쪽 마을로, 동쪽 해안에서 남쪽의 비밀까지. 노란 점은 현재 위치입니다.</p>
+      <div class="map-layout">
+      <canvas id="islandMapCanvas" width="960" height="720" role="img" aria-label="사방이 바다인 이스터 섬의 네 구역과 현재 위치. 구역별 상태는 목록에서 확인할 수 있습니다."></canvas>
+      <ul class="map-zones" aria-label="구역별 인수 상태">
+        <li><strong><span class="zone-dot zone-one">1</span> 오두막 마당</strong><span>서쪽 · 기본 개방 · 0 Gold</span></li>
+        <li><strong><span class="zone-dot zone-two">2</span> 원주민 마을</strong><span>북쪽 · 기본 개방 · 0 Gold</span></li>
+        <li><strong><span class="zone-dot zone-three">3</span> 해안가 비경 구역</strong><span id="mapZone3Status" aria-live="polite">동쪽 · 잠금 · 500 Gold</span></li>
+        <li><strong><span class="zone-dot zone-four">4</span> 고대 화산 유적지</strong><span>남쪽 · 잠금 · 인수 비용 미정</span></li>
+      </ul>
+      </div>
+      <p class="map-footer">3구역 인수는 마을의 이스터 부동산에서 진행하세요. 4구역의 인수 조건은 아직 밝혀지지 않았습니다.</p>
+    </section>
+  </div>
+
   <!-- 부동산: 모바일 안전 영역과 키보드 조작을 함께 지원 -->
   <div id="estateModal" class="modal estate-modal hidden" role="dialog" aria-modal="true" aria-labelledby="estateTitle">
     <section class="estate-panel">

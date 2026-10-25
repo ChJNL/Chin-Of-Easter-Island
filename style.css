@@ -318,6 +318,68 @@ body.ui-busy .action-btn {
   }
 }
 
+/* ===== 전체 지도: 안전 영역 안에서 스크롤 가능 ===== */
+.map-modal {
+  padding: max(12px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px))
+    max(12px, env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px));
+}
+.map-panel {
+  width: min(900px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  touch-action: pan-y;
+  background: #f7edcd;
+  color: #273e3c;
+  border: 3px solid #d7b977;
+  border-radius: 10px;
+  box-shadow: 0 18px 70px #001d37aa;
+}
+.map-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  background: #f7edcd;
+  border-bottom: 1px solid #cbb983;
+}
+.map-eyebrow { font-size: 11px; color: #54786e; margin-bottom: 5px; }
+.map-header h1 { font-size: clamp(17px, 4vw, 24px); }
+.map-close {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border: 1px solid #68877c;
+  border-radius: 5px;
+  color: #273e3c;
+  background: #e7e3c5;
+  font: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.map-close:focus-visible { outline: 3px solid #0876ac; outline-offset: 2px; }
+.map-help, .map-footer { padding: 12px 20px; font-size: 12px; line-height: 1.7; }
+.map-layout { display: grid; grid-template-columns: minmax(0, 1fr) 240px; align-items: start; }
+#islandMapCanvas { display: block; width: 100%; height: auto; max-height: 56dvh; object-fit: contain; aspect-ratio: 4 / 3; background: #075981; }
+.map-zones { display: grid; grid-template-columns: 1fr; gap: 10px; padding: 10px; list-style: none; }
+.map-zones li { display: flex; flex-direction: column; gap: 8px; padding: 12px; background: #eae1bd; border: 1px solid #ccbd87; border-radius: 5px; }
+.map-zones strong { font-size: 13px; }
+.map-zones li > span { font-size: 12px; line-height: 1.7; }
+.zone-dot { display: inline-block; width: 22px; line-height: 22px; margin-right: 4px; text-align: center; border-radius: 50%; color: #fff; }
+.zone-one { background: #9a733e; }
+.zone-two { background: #37775e; }
+.zone-three { background: #1e7e9d; }
+.zone-four { background: #6b4b74; }
+@media (max-width: 600px) {
+  .map-layout { grid-template-columns: 1fr; }
+  .map-header { padding: 10px 12px; }
+  .map-help, .map-footer { padding: 10px 12px; }
+  .map-zones { grid-template-columns: 1fr; padding: 12px; }
+}
+
 /* ===== 부동산 모달 ===== */
 .estate-modal {
   padding: max(14px, env(safe-area-inset-top, 0px)) max(14px, env(safe-area-inset-right, 0px))

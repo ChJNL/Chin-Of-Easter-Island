@@ -1,6 +1,6 @@
 // ============================================================
 // 이스터 섬의 턱 - script.js
-//  Step 8: 4개 구역의 대규모 섬 + 사방의 바다 + 전체 지도판
+//  Step 9: 특수 드릴 상점 + 석상별 조각 형태 + 쌍턱과 이끼 보존
 //  + 모바일 지원(가상 조이스틱 / E 버튼 / 화면 대응)
 // ============================================================
 
@@ -9,6 +9,13 @@ const ZONE3_PRICE = 500;             // 3구역(해안가 비경 구역) 인수 
 const DEBUG_TOOLS = true;            // true: 우측 상단에 '+100G (테스트)' 버튼 표시 (완성 후 false 로)
 const FOG_FADE_SEC = 3;              // 안개가 걷히는 데 걸리는 시간(초)
 const FOG_BLOCK_ALPHA = 0.35;        // 안개가 이 값보다 짙으면 통과할 수 없음
+const TOOL_CATALOG = {
+  hammer: { name:"기본 망치", price:0, style:"v" },
+  u: { name:"U자 드릴", price:300, style:"u" },
+  sigma: { name:"시그마 드릴", price:800, style:"sigma" },
+};
+const STYLE_NAMES = { raw:"투박한 턱", v:"V라인", u:"U라인", sigma:"시그마 알파 보이" };
+const SIGMA_TIP = 500;
 
 // ===== 1. HTML 요소 확인 =====
 // index.html이 이 script.js와 짝이 맞지 않으면(예전 버전 등) 원인을 화면에 알려줌
@@ -20,6 +27,9 @@ const REQUIRED_IDS = [
   "joystick", "stick", "actionBtn",
   "estateModal", "estateTitle", "estateClose", "estateBuy", "estateGold", "estateStatus", "carveTitle",
   "mapModal", "mapClose", "mapZone3Status", "islandMapCanvas",
+  "shopModal", "shopClose", "shopGold", "shopEquipped", "shopStatus", "shopUBtn", "shopSigmaBtn", "shopHammerBtn", "equippedToolText",
+  "secondChinShape", "carveMoss", "carveSvg", "carveBody", "carveHead",
+  "chinMoss", "secondChinMoss",
 ];
 
 (function checkElements() {
@@ -85,13 +95,32 @@ const mapZone3Status = document.getElementById("mapZone3Status");
 const islandMapCanvas = document.getElementById("islandMapCanvas");
 let mapActive = false;
 let mapPreviousFocus = null;
+const shopModal = document.getElementById("shopModal");
+const shopClose = document.getElementById("shopClose");
+const shopGold = document.getElementById("shopGold");
+const shopEquipped = document.getElementById("shopEquipped");
+const shopStatus = document.getElementById("shopStatus");
+const shopUBtn = document.getElementById("shopUBtn");
+const shopSigmaBtn = document.getElementById("shopSigmaBtn");
+const shopHammerBtn = document.getElementById("shopHammerBtn");
+const equippedToolText = document.getElementById("equippedToolText");
+const secondChinEl = document.getElementById("secondChinShape");
+const carveMoss = document.getElementById("carveMoss");
+const carveSvg = document.getElementById("carveSvg");
+const carveBody = document.getElementById("carveBody");
+const carveHead = document.getElementById("carveHead");
+const chinMossEl = document.getElementById("chinMoss");
+const secondChinMossEl = document.getElementById("secondChinMoss");
+let shopActive = false;
+let shopPreviousFocus = null;
 
 // ===== 3. 저장 데이터 (LocalStorage) =====
 // 저장 구조:
-//  version, gold, isSharp(석상 V라인 여부), tutorialDone, rewardDone(관광객 보상 수령),
+//  version, gold, isSharp(오두막 석상 조각 완료), tutorialDone, rewardDone(최초 관광객 보상 수령),
 //  villageVisited(마을 방문), villageIntroDone(원주민 소개 대화 완료),
 //  unlockedZones({ zone3: 해안가 비경 구역 인수 여부 }), coastIsSharp(해안가 석상 조각 완료),
-//  playerPos(맵 전체 기준 비율 0~1)
+//  ownedTools, equippedTool, statueStyles, coastMoss, sigmaTipPaid, pendingSigmaTips,
+//  playerPos(맵 전체 기준 비율 0~1). 지도 버전은 변경하지 않아 기존 위치도 유지합니다.
 const SAVE_KEY = "easterChinSave";
 const SAVE_VERSION = 3;                          // 이전 지도 위치만 초기화하고 나머지 진행은 유지
 const ZONE_KEYS = ["zone3"];
@@ -103,6 +132,12 @@ function defaultSave() {
     gold: 0,
     isSharp: false,
     coastIsSharp: false,
+    ownedTools: { u:false, sigma:false },
+    equippedTool: "hammer",
+    statueStyles: { moai:"raw", coastMoai:"raw" },
+    coastMoss: true,
+    sigmaTipPaid: { moai:false, coastMoai:false },
+    pendingSigmaTips: { moai:false, coastMoai:false },
     tutorialDone: false,
     rewardDone: false,
     villageVisited: false,
@@ -135,6 +170,20 @@ function sanitizeSave(raw) {
   }
   // 기존 저장 파일에는 이 값이 없으므로 미완료로 시작합니다.
   data.coastIsSharp = data.unlockedZones.zone3 && raw.coastIsSharp === true;
+  for (const tool of ["u","sigma"]) data.ownedTools[tool] = raw.ownedTools?.[tool] === true;
+  if (["u","sigma"].includes(raw.equippedTool) && data.ownedTools[raw.equippedTool]) {
+    data.equippedTool = raw.equippedTool;
+  }
+  for (const target of ["moai","coastMoai"]) {
+    const complete = target === "moai" ? data.isSharp : data.coastIsSharp;
+    const style = raw.statueStyles?.[target];
+    data.statueStyles[target] = complete ? (["v","u","sigma"].includes(style) ? style : "v") : "raw";
+    data.sigmaTipPaid[target] = complete && raw.sigmaTipPaid?.[target] === true;
+    data.pendingSigmaTips[target] = complete && !data.sigmaTipPaid[target] &&
+      (raw.pendingSigmaTips?.[target] === true || data.statueStyles[target] === "sigma");
+  }
+  // 이끼는 해안가 석상의 고유 속성입니다. 이전 버전이나 잘못된 값으로 제거되지 않습니다.
+  data.coastMoss = true;
 
   // 위치는 같은 맵 구조(version)일 때만 복원
   const p = raw.playerPos;
@@ -199,7 +248,8 @@ const coastMoai = { x: 0, y: 0, w: 56, h: 110, interactRange: 90 };
 
 // 관광객 NPC
 // mode: null(대기) | "arriving"(석상 앞으로 걸어오는 중) | "leaving"(마을 쪽으로 돌아가는 중)
-const tourist = { x: 0, y: 0, rx: 12, ry: 16, speed: 110, visible: false, mode: null };
+const tourist = { x: 0, y: 0, rx: 12, ry: 16, speed: 110, visible: false, mode: null, visitTarget:"moai" };
+let touristVisitReady = false;
 
 // 원주민 NPC (마을 중앙)
 const villager = { x: 0, y: 0, rx: 12, ry: 16 };
@@ -208,8 +258,7 @@ const villager = { x: 0, y: 0, rx: 12, ry: 16 };
 const buildings = [
   {
     id: "shop", name: "도구 상점", w: 150, h: 110, x: 0, y: 0,
-    prompt: "[E] 도구 상점 (다음 단계에서 오픈)",
-    closedMsg: "도구 상점은 다음 단계에서 오픈됩니다!",
+    prompt: "[E] 도구 상점 - 특수 드릴 구매 / 장착",
   },
   {
     id: "board", name: "홍보판", w: 110, h: 90, x: 0, y: 0,
@@ -379,6 +428,7 @@ function showMessage(text, ms = 2000) {
 function updateGoldUI(bump = false) {
   goldTextEl.textContent = save.gold;
   estateGold.textContent = save.gold;
+  shopGold.textContent = save.gold;
   if (bump) {
     const box = goldTextEl.parentElement;
     box.classList.remove("bump");
@@ -429,12 +479,12 @@ const HINT_TEXT = {
   desktop: {
     hud: "이동: 방향키 / WASD  |  상호작용: E",
     dlg: "클릭 또는 Enter",
-    carve: "마우스로 턱을 클릭해 날렵하게 깎으세요!",
+    carve: "턱을 클릭하거나 아래 버튼을 눌러 조각하세요!",
   },
   touch: {
     hud: "이동: 조이스틱  |  상호작용: E 버튼",
     dlg: "화면을 탭하세요",
-    carve: "턱을 탭해서 날렵하게 깎으세요!",
+    carve: "턱을 탭하거나 아래 버튼을 눌러 조각하세요!",
   },
 };
 
@@ -506,7 +556,7 @@ function resetJoystick() {
 joystickEl.addEventListener("pointerdown", (e) => {
   e.preventDefault();
   e.stopPropagation(); // 대화 넘기기 등 다른 터치 처리와 섞이지 않게
-  if (dialogueActive || carveActive || estateActive || mapActive || joyPointer !== null) return;
+  if (dialogueActive || carveActive || estateActive || mapActive || shopActive || joyPointer !== null) return;
   joyPointer = e.pointerId;
   try {
     joystickEl.setPointerCapture(e.pointerId);
@@ -530,7 +580,7 @@ joystickEl.addEventListener("pointermove", (e) => {
 actionBtn.addEventListener("pointerdown", (e) => {
   e.preventDefault();
   e.stopPropagation(); // 이 터치가 곧바로 대화를 넘기지 않게
-  if (dialogueActive || carveActive || estateActive || mapActive) return;
+  if (dialogueActive || carveActive || estateActive || mapActive || shopActive) return;
   interact();
 });
 
@@ -539,7 +589,7 @@ let uiBusy = false;
 let btnReady = false;
 
 function updateTouchUI(target) {
-  const busy = dialogueActive || carveActive || estateActive || mapActive;
+  const busy = dialogueActive || carveActive || estateActive || mapActive || shopActive;
   if (busy !== uiBusy) {
     uiBusy = busy;
     document.body.classList.toggle("ui-busy", busy);
@@ -579,7 +629,7 @@ function nearRect(r, range) {
 
 // 지금 E 키(또는 E 버튼)로 상호작용할 수 있는 대상 (없으면 null)
 function getTarget() {
-  if (dialogueActive || carveActive || estateActive || mapActive) return null;
+  if (dialogueActive || carveActive || estateActive || mapActive || shopActive) return null;
 
   if (nearRect(mapBoard, 65 + rangeBonus)) {
     return { id:"mapBoard", label:"[E] 이스터 섬 전체 지도", x:mapBoard.x+mapBoard.w/2, y:mapBoard.y, below:false };
@@ -589,7 +639,7 @@ function getTarget() {
   if (isNearMoai()) {
     return {
       id: "moai",
-      label: save.isSharp ? null : "[E] 턱 깎기",
+      label: canCarve("moai") ? "[E] " + STYLE_NAMES[equippedStyle()] + " 조각" : null,
       x: moai.x,
       y: moai.y - moai.h,
       below: false,
@@ -624,7 +674,7 @@ function getTarget() {
     if (nearPoint(c, coastMoai.interactRange + rangeBonus)) {
       return {
         id: "coastMoai",
-        label: save.coastIsSharp ? null : "[E] 쌍턱 모아이 턱 깎기",
+        label: canCarve("coastMoai") ? "[E] 쌍턱 모아이 · " + STYLE_NAMES[equippedStyle()] + " 조각" : null,
         x: coastMoai.x,
         y: coastMoai.y - coastMoai.h - 20,
         below: false,
@@ -635,7 +685,7 @@ function getTarget() {
   // 부동산은 소개 대화 전에도 이용할 수 있습니다.
   {
     for (const b of buildings) {
-      if (b.id !== "estate" && !save.villageIntroDone) continue;
+      if (!["estate","shop"].includes(b.id) && !save.villageIntroDone) continue;
       if (nearRect(b, 55 + rangeBonus)) {
         return { id: b.id, label: b.prompt, x: b.x + b.w / 2, y: b.y + b.h, below: true, building: b };
       }
@@ -651,8 +701,8 @@ function interact() {
 
   switch (target.id) {
     case "moai":
-      if (save.isSharp) showMessage("이미 날렵한 V라인이다!", 2000);
-      else openCarve();
+      if (canCarve("moai")) openCarve();
+      else showMessage("이미 " + STYLE_NAMES[save.statueStyles.moai] + "으로 조각했습니다. 다른 도구를 장착해 보세요!", 2500);
       break;
 
     case "villager":
@@ -666,8 +716,8 @@ function interact() {
       break;
 
     case "coastMoai":
-      if (save.coastIsSharp) showMessage("이미 날렵한 V라인이다!", 2000);
-      else openCarve("coastMoai");
+      if (canCarve("coastMoai")) openCarve("coastMoai");
+      else showMessage("두 턱 모두 " + STYLE_NAMES[save.statueStyles.coastMoai] + "입니다. 다른 도구를 장착해 보세요!", 2500);
       break;
 
     case "estate":
@@ -678,8 +728,12 @@ function interact() {
       openIslandMap();
       break;
 
+    case "shop":
+      openShop();
+      break;
+
     default:
-      // 상점 / 홍보판: 다음 단계에서 오픈
+      // 홍보판: 다음 단계에서 오픈
       if (target.building) showMessage(target.building.closedMsg, 2200);
   }
 }
@@ -690,10 +744,23 @@ const keys = {};
 
 window.addEventListener("keydown", (e) => {
   const blocked = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter"];
-  if (blocked.includes(e.code) && !((estateActive || mapActive) && e.code === "Enter")) e.preventDefault();
+  if (blocked.includes(e.code) && !((estateActive || mapActive || shopActive) && e.code === "Enter")) e.preventDefault();
 
   keys[e.code] = true;
   if (e.repeat) return;
+
+  if (shopActive) {
+    if (e.code === "Escape") closeShop();
+    if (e.code === "Tab") {
+      e.preventDefault();
+      const controls = [shopClose,shopUBtn,shopSigmaBtn,shopHammerBtn].filter(button => !button.disabled);
+      const current = controls.indexOf(document.activeElement);
+      const next = current < 0 ? (e.shiftKey ? controls.length-1 : 0)
+        : (current + (e.shiftKey ? -1 : 1) + controls.length) % controls.length;
+      controls[next].focus();
+    }
+    return;
+  }
 
   if (mapActive) {
     if (e.code === "Escape") closeIslandMap();
@@ -743,7 +810,7 @@ window.addEventListener("pointerdown", (e) => {
   if (e.pointerType === "touch") setTouchMode(true);
   else if (e.pointerType === "mouse" && !coarseQuery.matches) setTouchMode(false);
 
-  if (estateActive || mapActive) return;
+  if (estateActive || mapActive || shopActive) return;
   if (dialogueActive) advanceDialogue();
 });
 
@@ -871,16 +938,18 @@ function onTutorialEnd() {
   saveGame();
 }
 
-// 보상 대화가 끝났을 때: +100 골드
+// 보상 대화 종료: 최초 일반 팁 100G / 석상별 최초 시그마 팁 500G
 function onRewardEnd() {
-  save.rewardDone = true;
-  save.gold += 100;
-  updateGoldUI(true);
-  showMessage("+100 Gold!", 2500);
-  vibrate(30);
-  saveGame();
-
-  tourist.mode = "leaving"; // 관광객은 마을 쪽으로 돌아감
+  const target=tourist.visitTarget || "moai";
+  const sigma=save.pendingSigmaTips[target] && !save.sigmaTipPaid[target];
+  const first=target==="moai" && !save.rewardDone && save.isSharp;
+  if(!first && !sigma)return; // 중복 이벤트나 재방문으로 보상을 다시 지급하지 않습니다.
+  const amount=sigma?SIGMA_TIP:100;
+  if(first)save.rewardDone=true;
+  if(sigma){save.sigmaTipPaid[target]=true;save.pendingSigmaTips[target]=false;}
+  save.gold+=amount;
+  updateGoldUI(true);showMessage("관광객 팁 +"+amount+" Gold!",3000);vibrate(30);saveGame();
+  tourist.mode="leaving";
 }
 
 // 원주민 마을 소개 대화가 끝났을 때
@@ -889,6 +958,72 @@ function onVillageIntroEnd() {
   saveGame();
   showMessage("이제 마을 건물에 가까이 가 보자!", 3000);
 }
+
+// ===== 도구 상점과 영구 인벤토리 =====
+function equippedStyle() {
+  return TOOL_CATALOG[save.equippedTool].style;
+}
+
+function canCarve(target) {
+  if (!["moai","coastMoai"].includes(target)) return false;
+  if (target === "coastMoai" && !isZoneUnlocked("zone3")) return false;
+  return save.statueStyles[target] !== equippedStyle();
+}
+
+function updateShopUI() {
+  const name = TOOL_CATALOG[save.equippedTool].name;
+  equippedToolText.textContent = name;
+  shopEquipped.textContent = name;
+  shopGold.textContent = save.gold;
+  for (const [tool,button] of [["u",shopUBtn],["sigma",shopSigmaBtn]]) {
+    const equipped = save.equippedTool === tool;
+    button.disabled = equipped;
+    button.textContent = equipped ? "장착 중 · 영구 소지" : save.ownedTools[tool]
+      ? "보유 중 · 무료 장착" : TOOL_CATALOG[tool].price + " Gold로 구매";
+  }
+  shopHammerBtn.disabled = save.equippedTool === "hammer";
+  shopHammerBtn.textContent = shopHammerBtn.disabled ? "기본 망치 장착 중 · V라인" : "기본 망치 장착 · V라인";
+}
+
+function openShop() {
+  if (dialogueActive || carveActive || estateActive || mapActive || shopActive) return;
+  shopPreviousFocus = document.activeElement;
+  shopActive = true;
+  for (const key in keys) keys[key] = false;
+  resetJoystick();updateShopUI();
+  shopStatus.textContent = "구매한 드릴은 영구 소지합니다. 장착 변경에는 골드가 들지 않습니다.";
+  shopModal.classList.remove("hidden");
+  updateTouchUI(null);shopClose.focus();
+}
+
+function closeShop() {
+  if (!shopActive) return;
+  shopActive = false;shopModal.classList.add("hidden");
+  for (const key in keys) keys[key] = false;
+  resetJoystick();updateTouchUI(getTarget());
+  if (shopPreviousFocus && typeof shopPreviousFocus.focus === "function") shopPreviousFocus.focus();
+}
+
+function purchaseOrEquipTool(tool) {
+  if (!shopActive || !["hammer","u","sigma"].includes(tool)) return;
+  if (save.equippedTool === tool) return;
+  const item = TOOL_CATALOG[tool];
+  const buying = tool !== "hammer" && !save.ownedTools[tool];
+  if (buying && save.gold < item.price) {
+    shopStatus.textContent = "골드가 부족합니다! " + item.name + " 구매에는 " + item.price + " Gold가 필요합니다.";
+    return;
+  }
+  if (buying) { save.gold -= item.price;save.ownedTools[tool] = true; }
+  save.equippedTool = tool;
+  updateGoldUI(buying);updateShopUI();saveGame();
+  shopStatus.textContent = item.name + (buying ? " 구매 완료! 영구 소지하며 바로 장착했습니다." : "을 장착했습니다. 골드는 차감되지 않습니다.");
+  shopClose.focus();
+}
+
+shopUBtn.addEventListener("click",() => purchaseOrEquipTool("u"));
+shopSigmaBtn.addEventListener("click",() => purchaseOrEquipTool("sigma"));
+shopHammerBtn.addEventListener("click",() => purchaseOrEquipTool("hammer"));
+shopClose.addEventListener("click",closeShop);
 
 // ===== 마을 전체 지도판 =====
 function renderIslandMap() {
@@ -946,7 +1081,7 @@ function renderIslandMap() {
 }
 
 function openIslandMap() {
-  if(dialogueActive || carveActive || estateActive || mapActive)return;
+  if(dialogueActive || carveActive || estateActive || mapActive || shopActive)return;
   mapPreviousFocus=document.activeElement;
   mapActive=true;
   for(const key in keys)keys[key]=false;
@@ -975,7 +1110,7 @@ function updateEstateUI() {
 }
 
 function openEstate() {
-  if (dialogueActive || carveActive || estateActive || mapActive) return;
+  if (dialogueActive || carveActive || estateActive || mapActive || shopActive) return;
   estatePreviousFocus = document.activeElement;
   estateActive = true;
   for (const key in keys) keys[key] = false;
@@ -1030,49 +1165,85 @@ function updateFog(dt) {
 // ===== 11. 턱 깎기 미니게임 =====
 let carveActive = false;     // 팝업이 열려 있는지
 let carveFinishing = false;  // 100% 도달 후 닫히는 중인지
-let carveProgress = 0;       // V라인 완성도 (0~100)
+let carveProgress = 0;       // 선택한 도구의 턱 조각 완성도 (0~100)
 let carveTarget = "moai";
-const carveProgressByTarget = { moai: 0, coastMoai: 0 };
+const carveProgressByTarget = { moai:{}, coastMoai:{} };
+let carveStyle = "v";
+let carveStartStyle = "raw";
 
 function openCarve(target = "moai") {
-  if (dialogueActive || estateActive || carveActive || mapActive) return;
-  if (target !== "moai" && target !== "coastMoai") return;
-  if (target === "coastMoai" && (!isZoneUnlocked("zone3") || save.coastIsSharp)) return;
-  if (target === "moai" && save.isSharp) return;
+  if (dialogueActive || estateActive || carveActive || mapActive || shopActive || !canCarve(target)) return;
   carveTarget = target;
-  carveProgress = carveProgressByTarget[target];
-  carveTitle.textContent = target === "coastMoai" ? "쌍턱 모아이 조각" : "오두막 모아이 조각";
-  carveActive = true;
-  carveFinishing = false;
-  carveDoneEl.classList.add("hidden");
-  carveModal.classList.remove("hidden");
-  messageEl.textContent = "";
-  messageUntil = 0;
+  carveStyle = equippedStyle();
+  carveStartStyle = save.statueStyles[target];
+  carveProgress = carveProgressByTarget[target][carveStyle] || 0;
+  carveTitle.textContent = (target === "coastMoai" ? "쌍턱 모아이 · " : "오두막 모아이 · ") + STYLE_NAMES[carveStyle];
+  carveBtn.textContent = save.equippedTool === "hammer" ? "🔨 턱 깎기 (망치질)" : "⚙ " + TOOL_CATALOG[save.equippedTool].name + "로 조각";
+  carveActive = true;carveFinishing = false;
+  carveDoneEl.classList.add("hidden");carveModal.classList.remove("hidden");
+  messageEl.textContent = "";messageUntil = 0;
   renderCarve();
 }
 
 function closeCarve() {
-  carveProgressByTarget[carveTarget] = carveProgress;
+  if (!carveActive) return;
+  if (!carveFinishing) carveProgressByTarget[carveTarget][carveStyle] = carveProgress;
   carveActive = false;
   carveModal.classList.add("hidden");
 }
 
 // 게이지와 팝업 속 석상의 턱 모양을 진행도에 맞춰 갱신
+function chinGeometry(style) {
+  return {
+    raw:{bottom:0.92,depth:1,round:0},
+    v:{bottom:0.08,depth:1.25,round:0},
+    u:{bottom:0.72,depth:1.12,round:1},
+    sigma:{bottom:0.13,depth:3.4,round:0.15},
+  }[style];
+}
+
+function chinCommands(style,cx,top,halfWidth,baseHeight,progress=1,startStyle="raw") {
+  const a=chinGeometry(startStyle),b=chinGeometry(style);
+  const p=Math.max(0,Math.min(1,progress));
+  const bottom=a.bottom+(b.bottom-a.bottom)*p;
+  const h=baseHeight*(a.depth+(b.depth-a.depth)*p);
+  const round=a.round+(b.round-a.round)*p;
+  const side=top+h-round*h*0.45;
+  return [["M",cx-halfWidth,top],["L",cx+halfWidth,top],
+    ["L",cx+halfWidth*bottom,side],["Q",cx+halfWidth*bottom,top+h,cx,top+h],
+    ["Q",cx-halfWidth*bottom,top+h,cx-halfWidth*bottom,side],["Z"]];
+}
+
+function traceChin(commands) {
+  ctx.beginPath();
+  for(const [op,...args] of commands){
+    if(op==="M")ctx.moveTo(...args);
+    else if(op==="L")ctx.lineTo(...args);
+    else if(op==="Q")ctx.quadraticCurveTo(...args);
+    else ctx.closePath();
+  }
+}
+
 function renderCarve() {
-  gaugeFill.style.width = carveProgress + "%";
-  gaugeText.textContent = carveProgress + "%";
-
-  const p = carveProgress / 100;
-  const cx = 120;                      // 석상 중심 x
-  const topY = 138;                    // 턱이 시작되는 y
-  const wTop = 56;                     // 턱 윗부분 반너비
-  const wBot = 52 * (1 - p) + 5 * p;   // 아랫부분 반너비: 넓음 → 뾰족
-  const botY = 205 + 35 * p;           // 턱 끝: 점점 길어짐
-
-  chinEl.setAttribute(
-    "points",
-    `${cx - wTop},${topY} ${cx + wTop},${topY} ${cx + wBot},${botY} ${cx - wBot},${botY}`
-  );
+  gaugeFill.style.width=carveProgress+"%";gaugeText.textContent=carveProgress+"%";
+  const p=carveProgress/100,coast=carveTarget==="coastMoai";
+  const a=chinGeometry(carveStartStyle),b=chinGeometry(carveStyle);
+  const depth=a.depth+(b.depth-a.depth)*p;
+  const firstBase=coast?38:60;
+  const secondTop=138+firstBase*depth+9;
+  const height=(carveStyle==="sigma" || carveStartStyle==="sigma")?420:coast?350:300;
+  carveSvg.setAttribute("viewBox","0 0 240 "+height);
+  carveBody.setAttribute("points","70,150 170,150 205,"+(height-5)+" 35,"+(height-5));
+  carveHead.setAttribute("fill",coast?"#7f8f8a":"#8d8d8d");
+  carveBody.setAttribute("fill",coast?"#64786c":"#6f6f6f");
+  chinEl.setAttribute("d",chinCommands(carveStyle,120,138,56,firstBase,p,carveStartStyle).map(c=>c.join(" ")).join(" "));
+  chinEl.setAttribute("fill",coast?"#9db0aa":"#a8a8a8");
+  secondChinEl.classList.toggle("hidden",!coast);
+  secondChinEl.setAttribute("d",chinCommands(carveStyle,120,secondTop,44,32,p,carveStartStyle).map(c=>c.join(" ")).join(" "));
+  carveMoss.classList.toggle("hidden",!coast || !save.coastMoss);
+  chinMossEl.setAttribute("d","M99 "+(148+firstBase*depth*0.25)+"h18v8h-18z M126 "+(149+firstBase*depth*0.25)+"h7v5h-7z");
+  secondChinMossEl.setAttribute("d","M104 "+(secondTop+32*depth*0.3)+"h15v7h-15z M124 "+(secondTop+32*depth*0.3+7)+"h7v5h-7z");
+  carveDoneEl.textContent=STYLE_NAMES[carveStyle]+" 완성!";
 }
 
 // 타격 시 튀는 돌 조각
@@ -1124,30 +1295,29 @@ function hitChin(clientX, clientY) {
 }
 
 function finishCarve() {
-  carveFinishing = true;
-  // 완료 즉시 저장하여 연출 도중 새로고침해도 결과가 유지됩니다.
-  const finishedTarget = carveTarget;
-  if (finishedTarget === "coastMoai") save.coastIsSharp = true;
-  else save.isSharp = true;
-  saveGame();
-  carveDoneEl.classList.remove("hidden"); // "날렵한 V라인 완성!"
-  vibrate([40, 30, 60]);
-
-  setTimeout(() => {
-    closeCarve();
-    showMessage("날렵한 V라인 완성!", 2500);
-
-    // 잠시 후 관광객이 등장
-    if (finishedTarget === "moai") setTimeout(startTouristVisit, 1500);
-  }, 1500);
+  if (!carveActive || carveFinishing || carveProgress<100) return;
+  carveFinishing=true;
+  const target=carveTarget,style=carveStyle;
+  save.statueStyles[target]=style;
+  if(target==="coastMoai"){save.coastIsSharp=true;save.coastMoss=true;}
+  else save.isSharp=true;
+  // 완료와 보상 대기 상태를 한 번에 저장하여 연출 도중 새로고침해도 잃지 않습니다.
+  if(style==="sigma" && !save.sigmaTipPaid[target])save.pendingSigmaTips[target]=true;
+  carveProgressByTarget[target]={};
+  saveGame();carveDoneEl.classList.remove("hidden");vibrate([40,30,60]);
+  setTimeout(()=>{
+    closeCarve();showMessage(STYLE_NAMES[style]+" 완성!",2500);
+    setTimeout(startTouristVisit,1500);
+  },1500);
 }
 
 // 터치에서도 빠르게 연타할 수 있도록 pointerdown 사용
-chinEl.addEventListener("pointerdown", (e) => {
+// 두 턱 모두 같은 미니게임에 입력을 전달합니다.
+[chinEl,secondChinEl].forEach(el => el.addEventListener("pointerdown", (e) => {
   if (e.pointerType === "mouse" && e.button !== 0) return;
   e.preventDefault();
   hitChin(e.clientX, e.clientY);
-});
+}));
 carveBtn.addEventListener("click", () => {
   carveBtn.blur(); // Space/Enter로 다시 눌리는 것 방지
   hitChin();
@@ -1159,41 +1329,56 @@ carveClose.addEventListener("click", () => {
 
 // ===== 12. 관광객 보상 스토리 =====
 // 마을 쪽 울타리 통로에서 등장해 석상 앞까지 걸어옴
+function nextTouristTarget() {
+  if(save.isSharp && !save.rewardDone)return "moai";
+  for(const target of ["moai","coastMoai"]){
+    if(save.pendingSigmaTips[target] && !save.sigmaTipPaid[target])return target;
+  }
+  return null;
+}
+
+function touristRewardScript(target) {
+  if(save.pendingSigmaTips[target] && !save.sigmaTipPaid[target])return [
+    {speaker:"관광객",text:"이 압도적인 턱선… 전설의 시그마 알파 보이잖아요!"},
+    {speaker:"관광객",text:"이 작품은 특별해요! 감동의 팁으로 "+SIGMA_TIP+"골드를 드립니다!"},
+    {speaker:"주인공",text:target==="coastMoai"?"이끼도, 두 턱도 그대로! 이 석상만의 매력이 통했어!":"드릴 하나로 새로운 예술이 탄생했어!"},
+  ];
+  if(save.statueStyles[target]==="u")return [
+    {speaker:"관광객",text:"둥글고 부드러운 U라인이라니! 정말 멋진 조각이에요!"},
+    {speaker:"관광객",text:"팁으로 100골드 놓고 갑니다!"},
+    {speaker:"주인공",text:"새로운 턱선도 인기 만점이네!"},
+  ];
+  return rewardScript;
+}
+
 function startTouristVisit() {
-  if (save.rewardDone) return;
-  tourist.x = fenceX + 30;
-  tourist.y = gateY;
-  tourist.visible = true;
-  tourist.mode = "arriving";
+  touristVisitReady=true;
+  if(dialogueActive || carveActive || estateActive || mapActive || shopActive || tourist.mode)return;
+  const target=nextTouristTarget();
+  if(!target){touristVisitReady=false;return;}
+  tourist.visitTarget=target;
+  const m=target==="coastMoai"?coastMoai:moai;
+  tourist.x=target==="coastMoai"?m.x+300:fenceX+30;
+  tourist.y=target==="coastMoai"?m.y+150:gateY;
+  tourist.visible=true;tourist.mode="arriving";touristVisitReady=false;
 }
 
 function updateTourist(dt) {
-  if (!tourist.visible || !tourist.mode) return;
-
-  const arriving = tourist.mode === "arriving";
-  const tx = arriving ? moai.x + 85 : fenceX + 30;
-  const ty = arriving ? moai.y + 14 : gateY;
-
-  const dx = tx - tourist.x;
-  const dy = ty - tourist.y;
-  const dist = Math.hypot(dx, dy);
-  const step = tourist.speed * dt;
-
-  if (dist <= step) {
-    // 도착
-    tourist.x = tx;
-    tourist.y = ty;
-    tourist.mode = null;
-
-    if (arriving) {
-      startDialogue(rewardScript, onRewardEnd);
-    } else {
-      tourist.visible = false;
-    }
-  } else {
-    tourist.x += (dx / dist) * step;
-    tourist.y += (dy / dist) * step;
+  if(!tourist.visible || !tourist.mode){
+    if(touristVisitReady)startTouristVisit();
+    return;
   }
+  const target=tourist.visitTarget || "moai";
+  const m=target==="coastMoai"?coastMoai:moai;
+  const arriving=tourist.mode==="arriving";
+  const tx=arriving?m.x+85:target==="coastMoai"?m.x+300:fenceX+30;
+  const ty=arriving?m.y+14:target==="coastMoai"?m.y+150:gateY;
+  const dx=tx-tourist.x,dy=ty-tourist.y,dist=Math.hypot(dx,dy),step=tourist.speed*dt;
+  if(dist<=step){
+    tourist.x=tx;tourist.y=ty;tourist.mode=null;
+    if(arriving)startDialogue(touristRewardScript(target),onRewardEnd);
+    else {tourist.visible=false;touristVisitReady=nextTouristTarget()!==null;}
+  }else{tourist.x+=dx/dist*step;tourist.y+=dy/dist*step;}
 }
 
 // ===== 13. 유틸 함수 =====
@@ -1248,11 +1433,11 @@ function update(dt) {
   }
 
   // 팝업/대화 중에는 관광객이 다른 대화를 시작하지 않도록 일시 정지합니다.
-  if (!estateActive && !carveActive && !dialogueActive && !mapActive) updateTourist(dt);
+  if (!estateActive && !carveActive && !dialogueActive && !mapActive && !shopActive) updateTourist(dt);
   updateFog(dt);
 
   // 대화 중이거나 팝업이 열려 있으면 이동 불가
-  if (!dialogueActive && !carveActive && !estateActive && !mapActive) {
+  if (!dialogueActive && !carveActive && !estateActive && !mapActive && !shopActive) {
     let dx = 0;
     let dy = 0;
 
@@ -1689,106 +1874,67 @@ function drawMoai() {
 }
 
 // 턱 깎은 후: 뾰족하고 날렵한 V라인 모아이
-function drawMoaiV(m = moai) {
-  const left = m.x - m.w / 2;
-  const right = m.x + m.w / 2;
-  const top = m.y - m.h;
+function drawMossPattern(x,y,w,h) {
+  // 고정된 패턴을 사용하여 새로고침이나 도구 변경 후에도 같은 이끼 질감을 유지합니다.
+  const patches=[[0,0,0.40,0.35],[0.36,0.17,0.26,0.34],[0.12,0.5,0.34,0.3],[0.62,0.54,0.25,0.3],[0.77,0.07,0.17,0.22]];
+  patches.forEach(([px,py,pw,ph],i)=>{
+    ctx.fillStyle=["#4e853d","#91a85b","#35663d"][i%3];
+    ctx.fillRect(x+px*w,y+py*h,Math.max(2,pw*w),Math.max(2,ph*h));
+  });
+}
 
+function drawSculptedStatue(m,style,coast) {
+  const extra=coast?(style==="sigma"?150:style==="raw"?0:20):(style==="sigma"?80:0);
+  const top=m.y-m.h-extra,left=m.x-m.w/2;
   drawMoaiShadow(m);
+  // 머리와 몸통의 고유 색상, 이끼를 유지하고 턱 형태만 도구에 맞춰 가공합니다.
+  ctx.fillStyle=coast?"#64796f":"#7b7b7b";
+  const neck=style==="raw"?m.w:m.w*0.45;
+  ctx.fillRect(m.x-neck/2,top+55,neck,m.h+extra-55);
+  ctx.fillRect(left,m.y-10,m.w,10);
+  ctx.strokeStyle=coast?"#30483d":"#444";ctx.lineWidth=2;
+  ctx.strokeRect(m.x-neck/2,top+55,neck,m.h+extra-55);
+  ctx.fillStyle=coast?"#7f8f8a":"#8d8d8d";
+  ctx.fillRect(left-4,top,m.w+8,64);ctx.strokeRect(left-4,top,m.w+8,64);
+  ctx.fillStyle=coast?"#4f5d59":"#5f5f5f";ctx.fillRect(left-4,top+14,m.w+8,8);
+  ctx.fillStyle=coast?"#68766f":"#757575";ctx.fillRect(m.x-5,top+20,10,26);
+  ctx.fillStyle=coast?"#33403c":"#4a4a4a";ctx.fillRect(m.x-14,top+54,28,4);
+  const base=coast?(style==="sigma"?25:18):32;
+  const firstTop=top+62,firstHeight=base*chinGeometry(style).depth;
+  const jaws=[{y:firstTop,w:coast?23:27,h:base,fill:coast?"#a1b8ab":"#b0b0b0"}];
+  if(coast)jaws.push({y:firstTop+firstHeight+7,w:18,h:style==="sigma"?25:16,fill:"#829f8e"});
+  for(const jaw of jaws){
+    const commands=chinCommands(style,m.x,jaw.y,jaw.w,jaw.h);
+    traceChin(commands);ctx.fillStyle=jaw.fill;ctx.fill();
+    ctx.strokeStyle=coast?"#30483d":"#444";ctx.lineWidth=2;ctx.stroke();
+    if(coast && save.coastMoss){
+      ctx.save();traceChin(commands);ctx.clip();
+      drawMossPattern(m.x-jaw.w*0.5,jaw.y+jaw.h*0.25,jaw.w,jaw.h*0.65);ctx.restore();
+    }
+  }
+  if(coast && save.coastMoss){
+    drawMossPattern(left-4,top,22,13);drawMossPattern(left+m.w-10,top+38,14,15);
+    drawMossPattern(left,m.y-10,18,9);
+  }
+  if(style!=="raw"){
+    const sx=m.x+m.w/2+16,sy=top+34;
+    ctx.fillStyle=coast?"rgba(140,235,200,0.8)":style==="sigma"?"#dfb8ff":"#ffe89c";
+    ctx.fillRect(sx-1,sy-8,3,16);ctx.fillRect(sx-8,sy-1,16,3);
+  }
+  if(style==="sigma")drawLabel("시그마 알파 보이",m.x,top-14,12);
+}
 
-  // 몸통
-  ctx.fillStyle = "#7b7b7b";
-  ctx.fillRect(left, top + 60, m.w, m.h - 60);
-  ctx.strokeStyle = "#444";
-  ctx.lineWidth = 3;
-  ctx.strokeRect(left, top + 60, m.w, m.h - 60);
-
-  // 머리: 아래로 갈수록 좁아지는 V자 턱
-  ctx.fillStyle = "#a8a8a8";
-  ctx.beginPath();
-  ctx.moveTo(left - 4, top);
-  ctx.lineTo(right + 4, top);
-  ctx.lineTo(right + 4, top + 42);
-  ctx.lineTo(m.x + 5, top + 96);
-  ctx.lineTo(m.x - 5, top + 96);
-  ctx.lineTo(left - 4, top + 42);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-
-  // 눈썹 그늘 / 코 / 입
-  ctx.fillStyle = "#5f5f5f";
-  ctx.fillRect(left - 4 + 2, top + 14, m.w + 4, 8);
-  ctx.fillStyle = "#757575";
-  ctx.fillRect(m.x - 5, top + 20, 10, 26);
-  ctx.fillStyle = "#4a4a4a";
-  ctx.fillRect(m.x - 12, top + 58, 24, 4);
-
-  // 반짝이는 효과
-  const a = 0.4 + 0.6 * ((Math.sin(animT * 5) + 1) / 2);
-  const sx = right + 16;
-  const sy = top + 34;
-  ctx.fillStyle = `rgba(255, 235, 120, ${a})`;
-  ctx.fillRect(sx - 1, sy - 8, 3, 16);
-  ctx.fillRect(sx - 8, sy - 1, 16, 3);
+function drawMoaiV(m = moai) {
+  drawSculptedStatue(m,save.statueStyles.moai,false);
 }
 
 // 3구역의 특이한 석상: 턱이 두 겹인 쌍턱 모아이 (이끼 낀 청회색)
 function drawMoaiDouble() {
-  const m = coastMoai;
-  if (!isZoneUnlocked("zone3")) return;
-  if (save.coastIsSharp) {
-    drawMoaiV(m);
-    drawLabel("쌍턱 모아이 · V라인 완성", m.x, m.y - m.h - 10);
-    return;
-  }
-  const left = m.x - m.w / 2;
-  const top = m.y - m.h;
-
-  drawMoaiShadow(m);
-
-  // 머리 + 몸통
-  ctx.fillStyle = "#7f8f8a";
-  ctx.fillRect(left, top, m.w, m.h);
-  ctx.fillRect(left - 4, top, m.w + 8, 40);
-
-  // 이끼
-  ctx.fillStyle = "#5f8f4a";
-  ctx.fillRect(left - 4, top, 16, 8);
-  ctx.fillRect(left + m.w - 10, top + 38, 14, 10);
-  ctx.fillRect(left, top + 92, 20, 8);
-
-  // 눈썹 그늘 / 코 / 입
-  ctx.fillStyle = "#4f5d59";
-  ctx.fillRect(left, top + 14, m.w, 8);
-  ctx.fillStyle = "#68766f";
-  ctx.fillRect(m.x - 5, top + 20, 10, 26);
-  ctx.fillStyle = "#33403c";
-  ctx.fillRect(m.x - 14, top + 54, 28, 4);
-
-  // 쌍턱: 첫째 턱 + 둘째 턱
-  ctx.fillStyle = "#9db0aa";
-  ctx.fillRect(m.x - 20, top + 60, 40, 20);
-  ctx.fillStyle = "#86988f";
-  ctx.fillRect(m.x - 15, top + 80, 30, 18);
-  ctx.strokeStyle = "#2f3a37";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(m.x - 20, top + 60, 40, 20);
-  ctx.strokeRect(m.x - 15, top + 80, 30, 18);
-
-  // 외곽선
-  ctx.lineWidth = 3;
-  ctx.strokeRect(left, top, m.w, m.h);
-
-  // 신비한 푸른 반짝임
-  const a = 0.35 + 0.65 * ((Math.sin(animT * 4 + 1) + 1) / 2);
-  ctx.fillStyle = `rgba(140, 235, 255, ${a})`;
-  const sx = m.x + m.w / 2 + 16;
-  const sy = top + 30;
-  ctx.fillRect(sx - 1, sy - 8, 3, 16);
-  ctx.fillRect(sx - 8, sy - 1, 16, 3);
-
-  drawLabel("쌍턱 모아이", m.x, top - 10);
+  if(!isZoneUnlocked("zone3"))return;
+  const style=save.statueStyles.coastMoai;
+  drawSculptedStatue(coastMoai,style,true);
+  const extra=style==="sigma"?150:style==="raw"?0:20;
+  drawLabel("쌍턱 모아이 · "+STYLE_NAMES[style],coastMoai.x,coastMoai.y-coastMoai.h-extra-30,12);
 }
 
 // 타원형 캐릭터 공통 그리기
@@ -1989,6 +2135,7 @@ setTouchMode(coarseQuery.matches); // 터치 기기면 처음부터 조이스틱
 
 layout();
 updateGoldUI();
+updateShopUI();
 
 // 저장된 위치(비율)를 복원. 장애물 안에 끼는 위치면 기본 위치로 대체
 player.x = save.playerPos.x * worldW;
@@ -2009,8 +2156,8 @@ ready = true;
 if (!save.tutorialDone) {
   // 처음 시작: 튜토리얼 대화
   startDialogue(tutorialScript, onTutorialEnd);
-} else if (save.isSharp && !save.rewardDone) {
-  // 턱은 깎았지만 보상을 받기 전에 새로고침한 경우: 관광객 다시 등장
+} else if (nextTouristTarget() !== null) {
+  // 최초 보상이나 시그마 팁을 받기 전에 새로고침한 경우: 관광객 다시 등장
   setTimeout(startTouristVisit, 1000);
 }
 

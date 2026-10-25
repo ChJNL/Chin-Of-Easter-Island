@@ -23,6 +23,7 @@
     <div id="hudHint" class="help">이동: 방향키 / WASD &nbsp;|&nbsp; 상호작용: E</div>
     <div class="area">위치: <span id="areaText">오두막 마당</span></div>
     <div class="gold">보유 골드: <span id="goldText">0</span> G</div>
+    <div class="tool">장착 도구: <span id="equippedToolText">기본 망치</span></div>
   </div>
 
   <!-- 상단 우측: 리셋 버튼 + 테스트용 골드 버튼 (테스트 버튼은 script.js 의 DEBUG_TOOLS 가 true 일 때만 보임) -->
@@ -76,15 +77,46 @@
     </section>
   </div>
 
+  <!-- 도구 상점: 구매한 도구는 영구 소지하며 무료로 다시 장착 -->
+  <div id="shopModal" class="modal shop-modal hidden" role="dialog" aria-modal="true" aria-labelledby="shopTitle">
+    <section class="shop-panel">
+      <header class="shop-header">
+        <h1 id="shopTitle">도구 상점 · 특별한 턱을 조각하세요</h1>
+        <button id="shopClose" class="shop-close" type="button" aria-label="도구 상점 닫기">✕</button>
+      </header>
+      <div class="shop-content">
+        <p class="shop-wallet">보유 골드: <strong id="shopGold">0</strong> Gold · 장착: <strong id="shopEquipped">기본 망치</strong></p>
+        <div class="shop-tools">
+          <article class="shop-card">
+            <div class="tool-icon tool-u" aria-hidden="true">U</div>
+            <h2>U자 드릴 <span>300 Gold</span></h2>
+            <p>턱을 둥글고 부드러운 U자 형태로 깎아주는 트렌디한 드릴!</p>
+            <button id="shopUBtn" class="shop-buy" type="button">300 Gold로 구매</button>
+          </article>
+          <article class="shop-card">
+            <div class="tool-icon tool-sigma" aria-hidden="true">Σ</div>
+            <h2>시그마 드릴 <span>800 Gold</span></h2>
+            <p>턱을 세상 끝까지 길게 늘려 전설의 '시그마 알파 보이' 석상으로 만들어버리는 궁극의 드릴!</p>
+            <p class="shop-bonus">석상별 최초 시그마 조각: 관광객 팁 500 Gold</p>
+            <button id="shopSigmaBtn" class="shop-buy" type="button">800 Gold로 구매</button>
+          </article>
+        </div>
+        <button id="shopHammerBtn" class="shop-hammer" type="button">기본 망치 장착 · V라인</button>
+        <p class="shop-help">구매 즉시 장착됩니다. 보유 도구는 무료로 교체할 수 있습니다. 다른 도구로 다시 조각하면 석상의 형태가 바뀝니다.</p>
+        <p id="shopStatus" class="shop-status" role="status" aria-live="polite" aria-atomic="true"></p>
+      </div>
+    </section>
+  </div>
+
   <!-- 턱 깎기 미니게임 모달 -->
   <div id="carveModal" class="modal hidden">
     <div id="carvePanel" class="carve-panel">
       <button id="carveClose" class="carve-close" type="button" title="닫기 (Esc)">✕</button>
 
-      <!-- 상단: V라인 완성도 게이지 -->
+      <!-- 상단: 선택한 도구의 조각 완성도 게이지 -->
       <h2 id="carveTitle" class="carve-title">오두막 모아이 조각</h2>
       <div class="gauge-head">
-        <span>V라인 완성도</span>
+        <span>턱 조각 완성도</span>
         <span id="gaugeText">0%</span>
       </div>
       <div class="gauge">
@@ -95,16 +127,29 @@
       <div id="carveStage" class="carve-stage">
         <svg id="carveSvg" viewBox="0 0 240 300" xmlns="http://www.w3.org/2000/svg">
           <!-- 몸통 -->
-          <polygon points="70,150 170,150 205,295 35,295" fill="#6f6f6f" stroke="#333" stroke-width="4"/>
+          <polygon id="carveBody" points="70,150 170,150 205,295 35,295" fill="#6f6f6f" stroke="#333" stroke-width="4"/>
           <!-- 머리 -->
-          <rect x="45" y="20" width="150" height="130" fill="#8d8d8d" stroke="#333" stroke-width="4"/>
+          <rect id="carveHead" x="45" y="20" width="150" height="130" fill="#8d8d8d" stroke="#333" stroke-width="4"/>
           <!-- 눈썹 그늘 / 코 / 입 -->
           <rect x="45" y="50" width="150" height="14" fill="#5f5f5f"/>
           <rect x="112" y="62" width="16" height="48" fill="#757575"/>
           <rect x="98" y="122" width="44" height="7" fill="#4a4a4a"/>
-          <!-- 턱 (클릭 대상): 모양은 script.js에서 게이지에 따라 뾰족하게 변함 -->
-          <polygon id="chinShape" class="chin" points="64,138 176,138 172,205 68,205"
+          <!-- 턱: 선택한 도구와 진행도에 따라 V라인 / U라인 / 시그마로 변형 -->
+          <path id="chinShape" class="chin" d="M64 138 L176 138 L172 205 L68 205 Z"
                    fill="#a3a3a3" stroke="#ffd54a" stroke-width="4" stroke-dasharray="8 5"/>
+          <path id="secondChinShape" class="chin hidden" d="M76 212 L164 212 L160 250 L80 250 Z"
+                   fill="#86988f" stroke="#ffd54a" stroke-width="4" stroke-dasharray="8 5"/>
+          <defs>
+            <clipPath id="carveChinClip"><use href="#chinShape"/></clipPath>
+            <clipPath id="carveSecondChinClip"><use href="#secondChinShape"/></clipPath>
+          </defs>
+          <g id="carveMoss" class="hidden" aria-hidden="true" pointer-events="none">
+            <path d="M45 20h35v12H65v7H45z M174 58h21v24h-12V70h-9z" fill="#538b43"/>
+            <path d="M51 24h10v5H51z M175 64h8v5h-8z M58 104h16v9H58z" fill="#91ac60"/>
+            <path d="M46 89h12v21H46z M176 115h18v18h-10v-7h-8z" fill="#416e3b"/>
+            <path id="chinMoss" d="M99 160h18v8h-18z" fill="#5b8b45" clip-path="url(#carveChinClip)"/>
+            <path id="secondChinMoss" d="M104 225h15v7h-15z" fill="#739954" clip-path="url(#carveSecondChinClip)"/>
+          </g>
         </svg>
         <div id="carveDone" class="carve-done hidden">날렵한 V라인 완성!</div>
       </div>

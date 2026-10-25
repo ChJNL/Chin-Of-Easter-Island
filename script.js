@@ -1,12 +1,11 @@
 // ============================================================
 // 이스터 섬의 턱 - script.js
-//  Step 6: 3구역 맵(마당 / 마을 / 해안가 비경) + 안개(미해금) + 인수 표지판
+//  Step 7: 이스터 부동산 인수 + 해안가 석상 조각 + 진행 상태 저장
 //  + 모바일 지원(가상 조이스틱 / E 버튼 / 화면 대응)
 // ============================================================
 
 // ===== 0. 설정값 (개발/테스트용 스위치) =====
 const ZONE3_PRICE = 500;             // 3구역(해안가 비경 구역) 인수 비용
-const DEDUCT_GOLD_ON_UNLOCK = true;  // true: 인수할 때 골드 차감 / false: 500G 이상이면 차감 없이 해금(테스트)
 const DEBUG_TOOLS = true;            // true: 우측 상단에 '+100G (테스트)' 버튼 표시 (완성 후 false 로)
 const FOG_FADE_SEC = 3;              // 안개가 걷히는 데 걸리는 시간(초)
 const FOG_BLOCK_ALPHA = 0.35;        // 안개가 이 값보다 짙으면 통과할 수 없음
@@ -19,6 +18,7 @@ const REQUIRED_IDS = [
   "carveModal", "carvePanel", "carveStage", "chinShape",
   "gaugeFill", "gaugeText", "carveDone", "carveBtn", "carveClose", "carveGuide",
   "joystick", "stick", "actionBtn",
+  "estateModal", "estateTitle", "estateClose", "estateBuy", "estateGold", "estateStatus", "carveTitle",
 ];
 
 (function checkElements() {
@@ -70,11 +70,20 @@ const joystickEl = document.getElementById("joystick");
 const stickEl = document.getElementById("stick");
 const actionBtn = document.getElementById("actionBtn");
 
+const estateModal = document.getElementById("estateModal");
+const estateClose = document.getElementById("estateClose");
+const estateBuy = document.getElementById("estateBuy");
+const estateGold = document.getElementById("estateGold");
+const estateStatus = document.getElementById("estateStatus");
+const carveTitle = document.getElementById("carveTitle");
+let estateActive = false;
+let estatePreviousFocus = null;
+
 // ===== 3. 저장 데이터 (LocalStorage) =====
 // 저장 구조:
 //  version, gold, isSharp(석상 V라인 여부), tutorialDone, rewardDone(관광객 보상 수령),
 //  villageVisited(마을 방문), villageIntroDone(원주민 소개 대화 완료),
-//  unlockedZones({ zone3: 해안가 비경 구역 인수 여부 }),
+//  unlockedZones({ zone3: 해안가 비경 구역 인수 여부 }), coastIsSharp(해안가 석상 조각 완료),
 //  playerPos(맵 전체 기준 비율 0~1)
 const SAVE_KEY = "easterChinSave";
 const SAVE_VERSION = 2;                          // 맵 구조가 바뀌면 올림 (이전 위치 정보 무시)
@@ -86,6 +95,7 @@ function defaultSave() {
     version: SAVE_VERSION,
     gold: 0,
     isSharp: false,
+    coastIsSharp: false,
     tutorialDone: false,
     rewardDone: false,
     villageVisited: false,
@@ -116,6 +126,8 @@ function sanitizeSave(raw) {
   if (z && typeof z === "object") {
     for (const key of ZONE_KEYS) data.unlockedZones[key] = z[key] === true;
   }
+  // 기존 저장 파일에는 이 값이 없으므로 미완료로 시작합니다.
+  data.coastIsSharp = data.unlockedZones.zone3 && raw.coastIsSharp === true;
 
   // 위치는 같은 맵 구조(version)일 때만 복원
   const p = raw.playerPos;
@@ -199,8 +211,7 @@ const buildings = [
   },
   {
     id: "estate", name: "이스터 부동산", w: 170, h: 120, x: 0, y: 0,
-    prompt: "[E] 땅 인수하기 (다음 단계에서 오픈)",
-    closedMsg: "이스터 부동산은 다음 단계에서 오픈됩니다!",
+    prompt: "[E] 이스터 부동산 - 영토 인수 센터",
   },
 ];
 
@@ -433,6 +444,7 @@ function showMessage(text, ms = 2000) {
 
 function updateGoldUI(bump = false) {
   goldTextEl.textContent = save.gold;
+  estateGold.textContent = save.gold;
   if (bump) {
     const box = goldTextEl.parentElement;
     box.classList.remove("bump");
@@ -559,7 +571,7 @@ function resetJoystick() {
 joystickEl.addEventListener("pointerdown", (e) => {
   e.preventDefault();
   e.stopPropagation(); // 대화 넘기기 등 다른 터치 처리와 섞이지 않게
-  if (joyPointer !== null) return; // 이미 한 손가락이 잡고 있음
+  if (dialogueActive || carveActive || estateActive || joyPointer !== null) return;
   joyPointer = e.pointerId;
   try {
     joystickEl.setPointerCapture(e.pointerId);
@@ -583,7 +595,7 @@ joystickEl.addEventListener("pointermove", (e) => {
 actionBtn.addEventListener("pointerdown", (e) => {
   e.preventDefault();
   e.stopPropagation(); // 이 터치가 곧바로 대화를 넘기지 않게
-  if (dialogueActive || carveActive) return;
+  if (dialogueActive || carveActive || estateActive) return;
   interact();
 });
 
@@ -592,7 +604,7 @@ let uiBusy = false;
 let btnReady = false;
 
 function updateTouchUI(target) {
-  const busy = dialogueActive || carveActive;
+  const busy = dialogueActive || carveActive || estateActive;
   if (busy !== uiBusy) {
     uiBusy = busy;
     document.body.classList.toggle("ui-busy", busy);
@@ -632,7 +644,7 @@ function nearRect(r, range) {
 
 // 지금 E 키(또는 E 버튼)로 상호작용할 수 있는 대상 (없으면 null)
 function getTarget() {
-  if (dialogueActive || carveActive) return null;
+  if (dialogueActive || carveActive || estateActive) return null;
 
   // 모아이 석상 (턱을 깎은 뒤에는 안내 문구 없이 E만 반응)
   if (isNearMoai()) {
@@ -673,7 +685,7 @@ function getTarget() {
     if (nearPoint(c, coastMoai.interactRange + rangeBonus)) {
       return {
         id: "coastMoai",
-        label: "[E] 쌍턱 모아이 (다음 단계에서 오픈)",
+        label: save.coastIsSharp ? null : "[E] 쌍턱 모아이 턱 깎기",
         x: coastMoai.x,
         y: coastMoai.y - coastMoai.h - 20,
         below: false,
@@ -681,9 +693,10 @@ function getTarget() {
     }
   }
 
-  // 마을 건물: 소개 대화가 끝난 뒤에만 안내가 뜸
-  if (save.villageIntroDone) {
+  // 부동산은 소개 대화 전에도 이용할 수 있습니다.
+  {
     for (const b of buildings) {
+      if (b.id !== "estate" && !save.villageIntroDone) continue;
       if (nearRect(b, 55 + rangeBonus)) {
         return { id: b.id, label: b.prompt, x: b.x + b.w / 2, y: b.y + b.h, below: true, building: b };
       }
@@ -710,16 +723,20 @@ function interact() {
 
     case "zoneSign":
       if (isZoneUnlocked("zone3")) startDialogue(signUnlockedScript);
-      else if (save.gold >= ZONE3_PRICE) startDialogue(signBuyScript, onZone3Purchase);
       else startDialogue(signLockedScript);
       break;
 
     case "coastMoai":
-      showMessage("쌍턱 모아이는 다음 단계에서 조각할 수 있습니다!", 2500);
+      if (save.coastIsSharp) showMessage("이미 날렵한 V라인이다!", 2000);
+      else openCarve("coastMoai");
+      break;
+
+    case "estate":
+      openEstate();
       break;
 
     default:
-      // 상점 / 홍보판 / 부동산: 다음 단계에서 오픈
+      // 상점 / 홍보판: 다음 단계에서 오픈
       if (target.building) showMessage(target.building.closedMsg, 2200);
   }
 }
@@ -730,10 +747,21 @@ const keys = {};
 
 window.addEventListener("keydown", (e) => {
   const blocked = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter"];
-  if (blocked.includes(e.code)) e.preventDefault();
+  if (blocked.includes(e.code) && !(estateActive && e.code === "Enter")) e.preventDefault();
 
   keys[e.code] = true;
   if (e.repeat) return;
+
+  if (estateActive) {
+    if (e.code === "Escape") closeEstate();
+    // 포커스를 닫기/인수 버튼 안에 유지합니다. Enter와 Space는 기본 버튼 동작을 사용합니다.
+    if (e.code === "Tab") {
+      e.preventDefault();
+      if (document.activeElement === estateClose && !estateBuy.disabled) estateBuy.focus();
+      else estateClose.focus();
+    }
+    return;
+  }
 
   // 턱 깎기 팝업이 열려 있을 때: Esc로 닫기
   if (carveActive) {
@@ -766,6 +794,7 @@ window.addEventListener("pointerdown", (e) => {
   if (e.pointerType === "touch") setTouchMode(true);
   else if (e.pointerType === "mouse" && !coarseQuery.matches) setTouchMode(false);
 
+  if (estateActive) return;
   if (dialogueActive) advanceDialogue();
 });
 
@@ -810,16 +839,6 @@ const villagerRepeatScript = [
 // 3구역 인수 표지판 대화
 const signLockedScript = [
   { speaker: "표지판", text: `이 구역은 '이스터 부동산'에서 인수 후 개발할 수 있습니다! (필요 골드: ${ZONE3_PRICE} Gold)` },
-];
-
-const signBuyScript = [
-  { speaker: "표지판", text: `이 구역은 '이스터 부동산'에서 인수 후 개발할 수 있습니다! (필요 골드: ${ZONE3_PRICE} Gold)` },
-  {
-    speaker: "표지판",
-    text: DEDUCT_GOLD_ON_UNLOCK
-      ? `[인수 완료] ${ZONE3_PRICE} Gold를 지불했습니다. 짙은 안개가 서서히 걷힙니다…`
-      : "[인수 완료] 안개가 서서히 걷힙니다…",
-  },
 ];
 
 const signUnlockedScript = [
@@ -922,18 +941,60 @@ function onVillageIntroEnd() {
   showMessage("이제 마을 건물에 가까이 가 보자!", 3000);
 }
 
-// 3구역 인수 (임시 테스트 로직): 골드가 충분하면 해금하고 안개를 걷어냄
-function onZone3Purchase() {
-  if (isZoneUnlocked("zone3")) return;
-  if (save.gold < ZONE3_PRICE) return; // 대화 도중 골드가 줄어든 경우 대비
+// ===== 부동산 영토 인수 =====
+function updateEstateUI() {
+  const acquired = isZoneUnlocked("zone3");
+  estateGold.textContent = save.gold;
+  estateBuy.disabled = acquired;
+  estateBuy.textContent = acquired ? "인수 완료" : "구역 인수하기";
+  estateModal.querySelector(".estate-panel").classList.toggle("acquired", acquired);
+}
 
-  if (DEDUCT_GOLD_ON_UNLOCK) save.gold -= ZONE3_PRICE;
-  save.unlockedZones.zone3 = true; // 이제부터 안개가 걷히기 시작 (update 의 updateFog 참고)
+function openEstate() {
+  if (dialogueActive || carveActive || estateActive) return;
+  estatePreviousFocus = document.activeElement;
+  estateActive = true;
+  for (const key in keys) keys[key] = false;
+  resetJoystick();
+  estateStatus.textContent = isZoneUnlocked("zone3")
+    ? "이미 인수한 구역입니다. 해안가에서 쌍턱 모아이 석상을 만나보세요!" : "";
+  updateEstateUI();
+  estateModal.classList.remove("hidden");
+  updateTouchUI(null);
+  estateClose.focus();
+}
+
+function closeEstate() {
+  if (!estateActive) return;
+  estateActive = false;
+  estateModal.classList.add("hidden");
+  for (const key in keys) keys[key] = false;
+  resetJoystick();
+  updateTouchUI(getTarget());
+  if (estatePreviousFocus && typeof estatePreviousFocus.focus === "function") estatePreviousFocus.focus();
+}
+
+function onZone3Purchase() {
+  if (!estateActive) return;
+  if (isZoneUnlocked("zone3")) return;
+  if (save.gold < ZONE3_PRICE) {
+    estateStatus.textContent = "골드가 부족합니다! 턱을 더 깎아서 돈을 모아오세요!";
+    return;
+  }
+
+  save.gold -= ZONE3_PRICE;
+  save.unlockedZones.zone3 = true;
+  fogAlpha = 0; // 인수 즉시 안개와 충돌 제한을 함께 해제합니다.
   updateGoldUI(true);
   saveGame();
-  showMessage("해안가 비경 구역을 인수했다! 안개가 서서히 걷힌다…", 4000);
+  updateEstateUI();
+  estateStatus.textContent = "축하합니다! 해안가 구역을 성공적으로 '인수'했습니다! 새로운 '쌍턱 모아이 석상'이 발견되었습니다!";
+  estateClose.focus();
   vibrate([40, 30, 80]);
 }
+
+estateBuy.addEventListener("click", onZone3Purchase);
+estateClose.addEventListener("click", closeEstate);
 
 // 안개가 서서히 걷힘
 function updateFog(dt) {
@@ -946,8 +1007,17 @@ function updateFog(dt) {
 let carveActive = false;     // 팝업이 열려 있는지
 let carveFinishing = false;  // 100% 도달 후 닫히는 중인지
 let carveProgress = 0;       // V라인 완성도 (0~100)
+let carveTarget = "moai";
+const carveProgressByTarget = { moai: 0, coastMoai: 0 };
 
-function openCarve() {
+function openCarve(target = "moai") {
+  if (dialogueActive || estateActive || carveActive) return;
+  if (target !== "moai" && target !== "coastMoai") return;
+  if (target === "coastMoai" && (!isZoneUnlocked("zone3") || save.coastIsSharp)) return;
+  if (target === "moai" && save.isSharp) return;
+  carveTarget = target;
+  carveProgress = carveProgressByTarget[target];
+  carveTitle.textContent = target === "coastMoai" ? "쌍턱 모아이 조각" : "오두막 모아이 조각";
   carveActive = true;
   carveFinishing = false;
   carveDoneEl.classList.add("hidden");
@@ -958,6 +1028,7 @@ function openCarve() {
 }
 
 function closeCarve() {
+  carveProgressByTarget[carveTarget] = carveProgress;
   carveActive = false;
   carveModal.classList.add("hidden");
 }
@@ -1010,7 +1081,7 @@ function shakeAll() {
 
 // 망치질 한 번
 function hitChin(clientX, clientY) {
-  if (carveFinishing) return;
+  if (!carveActive || carveFinishing) return;
 
   // 위치가 없으면(버튼으로 친 경우) 턱 중앙에서 조각이 튐
   if (clientX === undefined) {
@@ -1030,17 +1101,20 @@ function hitChin(clientX, clientY) {
 
 function finishCarve() {
   carveFinishing = true;
+  // 완료 즉시 저장하여 연출 도중 새로고침해도 결과가 유지됩니다.
+  const finishedTarget = carveTarget;
+  if (finishedTarget === "coastMoai") save.coastIsSharp = true;
+  else save.isSharp = true;
+  saveGame();
   carveDoneEl.classList.remove("hidden"); // "날렵한 V라인 완성!"
   vibrate([40, 30, 60]);
 
   setTimeout(() => {
     closeCarve();
-    save.isSharp = true; // 이제부터 맵의 석상이 V라인으로 그려짐
-    saveGame();
     showMessage("날렵한 V라인 완성!", 2500);
 
     // 잠시 후 관광객이 등장
-    setTimeout(startTouristVisit, 1500);
+    if (finishedTarget === "moai") setTimeout(startTouristVisit, 1500);
   }, 1500);
 }
 
@@ -1127,11 +1201,12 @@ function update(dt) {
     messageUntil = 0;
   }
 
-  updateTourist(dt);
+  // 부동산 이용 중에는 관광객이 새 대화를 시작하지 않도록 일시 정지합니다.
+  if (!estateActive) updateTourist(dt);
   updateFog(dt);
 
   // 대화 중이거나 팝업이 열려 있으면 이동 불가
-  if (!dialogueActive && !carveActive) {
+  if (!dialogueActive && !carveActive && !estateActive) {
     let dx = 0;
     let dy = 0;
 
@@ -1575,19 +1650,19 @@ function drawMoai() {
 }
 
 // 턱 깎은 후: 뾰족하고 날렵한 V라인 모아이
-function drawMoaiV() {
-  const left = moai.x - moai.w / 2;
-  const right = moai.x + moai.w / 2;
-  const top = moai.y - moai.h;
+function drawMoaiV(m = moai) {
+  const left = m.x - m.w / 2;
+  const right = m.x + m.w / 2;
+  const top = m.y - m.h;
 
-  drawMoaiShadow(moai);
+  drawMoaiShadow(m);
 
   // 몸통
   ctx.fillStyle = "#7b7b7b";
-  ctx.fillRect(left, top + 60, moai.w, moai.h - 60);
+  ctx.fillRect(left, top + 60, m.w, m.h - 60);
   ctx.strokeStyle = "#444";
   ctx.lineWidth = 3;
-  ctx.strokeRect(left, top + 60, moai.w, moai.h - 60);
+  ctx.strokeRect(left, top + 60, m.w, m.h - 60);
 
   // 머리: 아래로 갈수록 좁아지는 V자 턱
   ctx.fillStyle = "#a8a8a8";
@@ -1595,8 +1670,8 @@ function drawMoaiV() {
   ctx.moveTo(left - 4, top);
   ctx.lineTo(right + 4, top);
   ctx.lineTo(right + 4, top + 42);
-  ctx.lineTo(moai.x + 5, top + 96);
-  ctx.lineTo(moai.x - 5, top + 96);
+  ctx.lineTo(m.x + 5, top + 96);
+  ctx.lineTo(m.x - 5, top + 96);
   ctx.lineTo(left - 4, top + 42);
   ctx.closePath();
   ctx.fill();
@@ -1604,11 +1679,11 @@ function drawMoaiV() {
 
   // 눈썹 그늘 / 코 / 입
   ctx.fillStyle = "#5f5f5f";
-  ctx.fillRect(left - 4 + 2, top + 14, moai.w + 4, 8);
+  ctx.fillRect(left - 4 + 2, top + 14, m.w + 4, 8);
   ctx.fillStyle = "#757575";
-  ctx.fillRect(moai.x - 5, top + 20, 10, 26);
+  ctx.fillRect(m.x - 5, top + 20, 10, 26);
   ctx.fillStyle = "#4a4a4a";
-  ctx.fillRect(moai.x - 12, top + 58, 24, 4);
+  ctx.fillRect(m.x - 12, top + 58, 24, 4);
 
   // 반짝이는 효과
   const a = 0.4 + 0.6 * ((Math.sin(animT * 5) + 1) / 2);
@@ -1622,6 +1697,12 @@ function drawMoaiV() {
 // 3구역의 특이한 석상: 턱이 두 겹인 쌍턱 모아이 (이끼 낀 청회색)
 function drawMoaiDouble() {
   const m = coastMoai;
+  if (!isZoneUnlocked("zone3")) return;
+  if (save.coastIsSharp) {
+    drawMoaiV(m);
+    drawLabel("쌍턱 모아이 · V라인 완성", m.x, m.y - m.h - 10);
+    return;
+  }
   const left = m.x - m.w / 2;
   const top = m.y - m.h;
 

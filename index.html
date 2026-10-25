@@ -40,12 +40,28 @@
     <div id="dlgHint" class="dlg-hint">클릭 또는 Enter</div>
   </div>
 
+  <!-- 부동산: 모바일 안전 영역과 키보드 조작을 함께 지원 -->
+  <div id="estateModal" class="modal estate-modal hidden" role="dialog" aria-modal="true" aria-labelledby="estateTitle">
+    <section class="estate-panel">
+      <button id="estateClose" class="estate-close" type="button" aria-label="부동산 닫기">✕</button>
+      <h1 id="estateTitle">이스터 부동산 - 영토 인수 센터</h1>
+      <article class="estate-listing">
+        <h2>[3구역: 해안가 비경 구역] - 가격: 500 Gold</h2>
+        <p>미지의 해안가를 인수하여 새로운 쌍턱 모아이 석상을 발굴하세요!</p>
+        <p>보유 골드: <strong id="estateGold">0</strong> Gold</p>
+        <button id="estateBuy" class="estate-buy" type="button">구역 인수하기</button>
+      </article>
+      <p id="estateStatus" class="estate-status" role="status" aria-live="polite" aria-atomic="true"></p>
+    </section>
+  </div>
+
   <!-- 턱 깎기 미니게임 모달 -->
   <div id="carveModal" class="modal hidden">
     <div id="carvePanel" class="carve-panel">
       <button id="carveClose" class="carve-close" type="button" title="닫기 (Esc)">✕</button>
 
       <!-- 상단: V라인 완성도 게이지 -->
+      <h2 id="carveTitle" class="carve-title">오두막 모아이 조각</h2>
       <div class="gauge-head">
         <span>V라인 완성도</span>
         <span id="gaugeText">0%</span>
